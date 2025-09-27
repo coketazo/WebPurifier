@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebPurifier</title>
+    <link rel="stylesheet" href="css/popup.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>WebPurifier</h1>
+            <p class="subtitle">Clean & Safe Browsing</p>
+        </header>
+        
+        <main>
+            <div class="status" id="status">
+                <div class="status-indicator" id="statusIndicator"></div>
+                <span id="statusText">Analyzing page...</span>
+            </div>
+            
+            <div class="stats" id="stats">
+                <div class="stat-item">
+                    <span class="stat-number" id="adsBlocked">0</span>
+                    <span class="stat-label">Ads Blocked</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-number" id="trackersBlocked">0</span>
+                    <span class="stat-label">Trackers Blocked</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-number" id="scriptsBlocked">0</span>
+                    <span class="stat-label">Scripts Blocked</span>
+                </div>
+            </div>
+            
+            <div class="controls">
+                <div class="toggle-group">
+                    <label class="toggle">
+                        <input type="checkbox" id="blockAds" checked>
+                        <span class="toggle-slider"></span>
+                        <span class="toggle-label">Block Ads</span>
+                    </label>
+                    
+                    <label class="toggle">
+                        <input type="checkbox" id="blockTrackers" checked>
+                        <span class="toggle-slider"></span>
+                        <span class="toggle-label">Block Trackers</span>
+                    </label>
+                    
+                    <label class="toggle">
+                        <input type="checkbox" id="blockPopups" checked>
+                        <span class="toggle-slider"></span>
+                        <span class="toggle-label">Block Popups</span>
+                    </label>
+                </div>
+                
+                <div class="action-buttons">
+                    <button id="purifyBtn" class="btn btn-primary">Purify Page</button>
+                    <button id="analyzeBtn" class="btn btn-secondary">Analyze</button>
+                </div>
+            </div>
+            
+            <div class="recommendations" id="recommendations" style="display: none;">
+                <h3>Recommendations</h3>
+                <ul id="recommendationsList"></ul>
+            </div>
+        </main>
+        
+        <footer>
+            <div class="settings-link">
+                <a href="#" id="settingsLink">Settings</a>
+            </div>
+        </footer>
+    </div>
+    
+    <script src="js/popup.js"></script>
+</body>
+</html>

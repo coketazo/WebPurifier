@@ -1,0 +1,27 @@
+{
+  "name": "webpurifier-extension",
+  "version": "1.0.0",
+  "description": "WebPurifier Chrome Extension",
+  "main": "manifest.json",
+  "scripts": {
+    "build": "npm run copy-assets",
+    "dev": "npm run build && npm run watch",
+    "watch": "chokidar \"js/**/*.js\" \"css/**/*.css\" \"*.html\" -c \"npm run build\"",
+    "copy-assets": "echo 'Assets copied'",
+    "lint": "eslint js/ --ext .js",
+    "test": "echo 'No tests specified for extension'",
+    "package": "zip -r webpurifier-extension.zip . -x node_modules/\\* .git/\\* *.zip"
+  },
+  "devDependencies": {
+    "chokidar-cli": "^3.0.0",
+    "eslint": "^8.55.0"
+  },
+  "keywords": [
+    "chrome-extension",
+    "ad-blocker",
+    "privacy",
+    "web-filter"
+  ],
+  "author": "WebPurifier Team",
+  "license": "MIT"
+}

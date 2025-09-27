@@ -1,0 +1,46 @@
+{
+  "name": "webpurifier-monorepo",
+  "version": "1.0.0",
+  "description": "WebPurifier monorepo with FastAPI backend and Chrome extension frontend",
+  "private": true,
+  "workspaces": [
+    "backend",
+    "frontend"
+  ],
+  "scripts": {
+    "dev": "concurrently \"npm run backend:dev\" \"npm run frontend:dev\"",
+    "backend:dev": "cd backend && python run.py",
+    "backend:install": "cd backend && pip install -r requirements.txt",
+    "frontend:build": "cd frontend && npm run build",
+    "frontend:dev": "cd frontend && npm run dev",
+    "build": "npm run backend:install && npm run frontend:build",
+    "start": "npm run backend:dev",
+    "test": "concurrently \"npm run backend:test\" \"npm run frontend:test\"",
+    "backend:test": "cd backend && python -m pytest",
+    "frontend:test": "cd frontend && npm test",
+    "lint": "concurrently \"npm run backend:lint\" \"npm run frontend:lint\"",
+    "backend:lint": "cd backend && flake8 app/",
+    "frontend:lint": "cd frontend && eslint js/"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  },
+  "engines": {
+    "node": ">=16.0.0",
+    "python": ">=3.8.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/coketazo/WebPurifier"
+  },
+  "keywords": [
+    "chrome-extension",
+    "fastapi",
+    "ad-blocker",
+    "web-purifier",
+    "privacy",
+    "monorepo"
+  ],
+  "author": "WebPurifier Team",
+  "license": "MIT"
+}

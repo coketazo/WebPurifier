@@ -1,0 +1,59 @@
+/* WebPurifier Content CSS - Injected into web pages */
+
+.webpurifier-blocked {
+    transition: opacity 0.3s ease !important;
+}
+
+.webpurifier-blocked-ad {
+    background: rgba(255, 0, 0, 0.1) !important;
+    border: 1px dashed #ff0000 !important;
+}
+
+.webpurifier-blocked-popup {
+    background: rgba(255, 165, 0, 0.1) !important;
+    border: 1px dashed #ffa500 !important;
+}
+
+.webpurifier-placeholder {
+    background: #f8f9fa !important;
+    border: 2px dashed #dee2e6 !important;
+    padding: 15px !important;
+    margin: 10px 0 !important;
+    text-align: center !important;
+    color: #6c757d !important;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
+    font-size: 13px !important;
+    border-radius: 4px !important;
+    position: relative !important;
+}
+
+.webpurifier-placeholder::before {
+    content: '🛡️' !important;
+    margin-right: 8px !important;
+}
+
+/* Hide common ad containers */
+[class*="ad-container"],
+[class*="ad-wrapper"],
+[id*="google_ads"],
+[class*="adsense"],
+.advertisement,
+.ad-banner,
+.sponsored-content {
+    display: none !important;
+}
+
+/* Block known tracking pixels */
+img[src*="doubleclick"],
+img[src*="google-analytics"],
+img[src*="facebook.com/tr"],
+img[width="1"][height="1"] {
+    display: none !important;
+}
+
+/* Popup overlay blocking */
+.webpurifier-overlay-blocked {
+    background: rgba(0, 0, 0, 0.1) !important;
+    backdrop-filter: none !important;
+    pointer-events: none !important;
+}
