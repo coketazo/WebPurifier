@@ -1,7 +1,10 @@
 [project]
-name = "WebPurifier/backend"
+name = "WebPurifier.backend"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "fastapi>=0.117.1",
+    "pydantic-settings>=2.11.0",
+]
