@@ -26,4 +26,4 @@ class DetectedContent(BaseModel):
 class FilterResponse(BaseModel):
     """filter response schema"""
 
-    detectedContents: list[DetectedContent | None]
+    detectedContents: list[DetectedContent]
