@@ -2,7 +2,7 @@ from pydantic import BaseModel
 
 
 class Content(BaseModel):
-    id: int
+    idx: int
     text: str
 
 
