@@ -12,5 +12,18 @@ class Option(BaseModel):
 
 
 class FilterRequest(BaseModel):
+    """filter request schema"""
+
     contents: list[Content]
     option: Option
+
+
+class DetectedContent(BaseModel):
+    idx: int
+    category: str
+
+
+class FilterResponse(BaseModel):
+    """filter response schema"""
+
+    detectedContents: list[DetectedContent]
