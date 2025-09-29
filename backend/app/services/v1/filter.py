@@ -51,5 +51,5 @@ def detectCategory(req: FilterRequest) -> FilterResponse:
 }}
 """
     req_str = req.model_dump_json()
-    resp = generate_text(prompt=prompt, content=req_str, respSchema=FilterResponse)
+    resp = generate_text(content=req_str, prompt=prompt, respSchema=FilterResponse)
     return resp
