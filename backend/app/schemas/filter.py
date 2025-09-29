@@ -2,7 +2,7 @@ from pydantic import BaseModel
 
 
 class Content(BaseModel):
-    id: int
+    idx: int
     text: str
 
 
@@ -26,4 +26,4 @@ class DetectedContent(BaseModel):
 class FilterResponse(BaseModel):
     """filter response schema"""
 
-    detectedContents: list[DetectedContent]
+    detectedContents: list[DetectedContent | None]
