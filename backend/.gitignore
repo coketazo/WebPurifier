@@ -1,0 +1,72 @@
+# Python 관련
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 가상환경
+env/
+venv/
+ENV/
+.venv/
+venv.bak/
+
+# 패키징 / 빌드 아티팩트
+build/
+dist/
+*.egg-info/
+pip-wheel-metadata/
+*.egg
+wheelhouse/
+
+# 테스트 / 커버리지 / 캐시
+.pytest_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+.cache/
+nosetests.xml
+coverage.xml
+
+# 타입 검사 / 정적분석 캐시
+.mypy_cache/
+.pyright/
+.pytype/
+
+# 환경 변수 / 시크릿
+.env
+.env.* 
+.env.local
+
+# 데이터베이스 / 업로드 파일
+*.sqlite3
+*.db
+*.db-journal
+media/
+uploads/
+staticfiles/
+
+# 로그 / 프로세스 파일
+*.log
+logs/
+*.pid
+*.sock
+
+# FastAPI / Uvicorn 관련 임시파일
+uvicorn.* 
+# (예: uvicorn.log, uvicorn.pid 등 임의의 런타임 파일)
+
+# 에디터 / IDE
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# 운영체제
+.DS_Store
+Thumbs.db
+
+# 기타
+*.bak
+*.swp
