@@ -3,6 +3,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from app.core.config import settings
 
+from app.api.v1.routers import router as api_v1_router
+
 app = FastAPI()
 
 origins = settings.CORS_ORIGINS or []
@@ -17,6 +19,8 @@ if origins:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+app.include_router(api_v1_router, prefix="/api/v1")
 
 
 @app.get("/")
