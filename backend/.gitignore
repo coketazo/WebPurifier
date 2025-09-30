@@ -70,3 +70,8 @@ Thumbs.db
 # 기타
 *.bak
 *.swp
+
+# uv.lock이 있기에 requirements.txt를 공유할 필요 없음
+requirements.txt
+
+.aws-sam

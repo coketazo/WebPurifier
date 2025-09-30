@@ -11,8 +11,10 @@ class Settings(BaseSettings):
 
     # CORS 설정
     CORS_ORIGINS: Union[str, List[str]] = []
-
     GEMINI_API_KEY: str
+
+    # aws 배포시 api stage로 루트 설정
+    STAGE: str
 
 
 settings = Settings()
