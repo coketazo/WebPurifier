@@ -8,18 +8,18 @@ chrome.runtime.onMessage.addListener((message, sender) => {
   // 메시지의 type이 “페이지 내 텍스트를 필터링하라”인 경우에만 처리
   if (message?.type === MSG.PROCESS_PAGE_TEXT) {
 
-    // 1️⃣ chrome.storage에 저장된 최신 사용자 설정을 불러옴
+    // chrome.storage에 저장된 최신 사용자 설정을 불러옴
     getSettings().then(({ settings }) => {
       // 만약 필터링 기능이 꺼져 있다면 (isEnabled=false) 아무 작업도 하지 않음
       if (!settings?.isEnabled) return;
 
-      // 2️⃣ 백엔드 필터링 요청에 사용할 옵션 구성
+      //백엔드 필터링 요청에 사용할 옵션 구성
       const options = {
         categories: settings.selectedTopics,         // 사용자가 선택한 필터 주제 (예: 폭력, 선정성 등)
         strength: parseInt(settings.strength, 10),   // 필터 강도(문자열 → 숫자 변환)
       };
 
-      // 3️⃣ 실제 필터링 요청: 감지된 텍스트 인덱스를 받아옴
+      // 실제 필터링 요청: 감지된 텍스트 인덱스를 받아옴
       filterContents(message.payload, options)
         .then(response => {
           // 감지된 콘텐츠(detectedContents)의 idx 값을 Set으로 모아 중복 제거
@@ -28,7 +28,7 @@ chrome.runtime.onMessage.addListener((message, sender) => {
           // 메시지를 보낸 탭 ID가 유효한지 확인
           if (!sender?.tab?.id) return;
 
-          // 4️⃣ 감지된 텍스트 인덱스 목록을 content_script.js로 다시 전송
+          //감지된 텍스트 인덱스 목록을 content_script.js로 다시 전송
           chrome.tabs.sendMessage(sender.tab.id, {
             type: MSG.FILTER_TEXTS,     // “이 텍스트들을 블러 처리하라”는 메시지
             payload: [...ids],          // Set → 배열로 변환
@@ -40,7 +40,7 @@ chrome.runtime.onMessage.addListener((message, sender) => {
   }
 });
 
-// ✅ 사용자 설정이 변경될 때(예: ON/OFF 토글, 주제 변경 등) 자동으로 반영하기 위한 리스너
+//  사용자 설정이 변경될 때(예: ON/OFF 토글, 주제 변경 등) 자동으로 반영하기 위한 리스너
 chrome.storage.onChanged.addListener(changes => {
   // settings 객체가 변경된 경우에만 실행
   if (changes.settings) {
