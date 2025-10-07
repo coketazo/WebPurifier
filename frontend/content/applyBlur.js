@@ -19,4 +19,3 @@ function applyBlurByIds(ids) {
 window.WPApply = {
   applyBlurByIds
 };
-
