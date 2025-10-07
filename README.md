@@ -1,6 +1,7 @@
 # WebPurifier 프런트 구조
 
 WebPurifier의 프런트엔드 구조는 기능(feature)을 기준으로 나눈 구조로 바꿈  
+주석 추가  
 재사용 가능성을 생각해서 common 폴더를 만듬.  
 popup : 사용자 인터페이스(UI)를 담당하는 폴더 (UI는 보기 좋게 / JS는 데이터와 로직만 관리)  
 background: content(페이지 내부 코드)와 popup(설정창) 사이의 중앙 통신 (제어 및 통신 중심)  
