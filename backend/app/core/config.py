@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     GEMINI_API_KEY: str
 
     # aws 배포시 api stage로 루트 설정
-    STAGE: str
+    STAGE: str | None = None
 
 
 settings = Settings()
