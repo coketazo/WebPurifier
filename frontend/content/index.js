@@ -68,8 +68,3 @@ function setupMutationObserver() {
 initializeFiltering();
 setupMessageListener();
 setupMutationObserver();
-
-// 초기화 실행
-initializeFiltering();
-setupMessageListener();
-setupMutationObserver();
