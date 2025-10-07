@@ -1,1 +1,5 @@
-body.webpurifier-active .webpurifier-blur{filter:blur(5px);cursor:pointer;}
+body.webpurifier-active .webpurifier-blur{
+    filter:blur(5px);
+    cursor:pointer;
+}
+
