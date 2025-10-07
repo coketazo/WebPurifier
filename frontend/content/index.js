@@ -1,1 +1,75 @@
-(function(){const MSG={PROCESS_PAGE_TEXT:"PROCESS_PAGE_TEXT",FILTER_TEXTS:"FILTER_TEXTS",ENABLE_FILTERING:"ENABLE_FILTERING",DISABLE_FILTERING:"DISABLE_FILTERING"};const{collectTexts,debounce}=window.WPScanner;const{applyBlurByIds}=window.WPApply;function send(){const p=collectTexts();if(p.length)chrome.runtime.sendMessage({type:MSG.PROCESS_PAGE_TEXT,payload:p})}chrome.storage.local.get("settings",d=>{if(d?.settings?.isEnabled){document.body.classList.add("webpurifier-active");send()}});chrome.runtime.onMessage.addListener(m=>{if(!m||!m.type)return;if(m.type===MSG.FILTER_TEXTS)applyBlurByIds(m.payload||[]);else if(m.type===MSG.ENABLE_FILTERING){document.body.classList.add("webpurifier-active");send()}else if(m.type===MSG.DISABLE_FILTERING){document.body.classList.remove("webpurifier-active")}});const obs=new MutationObserver(debounce(send,600));obs.observe(document.documentElement,{subtree:true,childList:true,characterData:true})})();
+// 메시지 타입 상수 import
+import { MSG } from "./common/messages.js";
+
+// 전역 유틸 함수 가져오기
+const { collectTexts, debounce } = window.WPScanner;
+const { applyBlurByIds } = window.WPApply;
+
+/**
+ * 페이지 텍스트를 수집하고 백그라운드 스크립트로 전송
+ */
+function sendPageTexts() {
+  const texts = collectTexts();
+  if (texts.length > 0) {
+    chrome.runtime.sendMessage({
+      type: MSG.PROCESS_PAGE_TEXT,
+      payload: texts
+    });
+  }
+}
+
+/**
+ * 사용자 설정 불러오기 및 초기 필터링 적용
+ */
+function initializeFiltering() {
+  chrome.storage.local.get("settings", data => {
+    if (data?.settings?.isEnabled) {
+      document.body.classList.add("webpurifier-active");
+      sendPageTexts();
+    }
+  });
+}
+
+/**
+ * 백그라운드/팝업에서 메시지 수신 처리
+ */
+function setupMessageListener() {
+  chrome.runtime.onMessage.addListener(message => {
+    if (!message?.type) return;
+
+    switch (message.type) {
+      case MSG.FILTER_TEXTS:
+        applyBlurByIds(message.payload || []);
+        break;
+      case MSG.ENABLE_FILTERING:
+        document.body.classList.add("webpurifier-active");
+        sendPageTexts();
+        break;
+      case MSG.DISABLE_FILTERING:
+        document.body.classList.remove("webpurifier-active");
+        break;
+    }
+  });
+}
+
+/**
+ * DOM 변화 감지
+ */
+function setupMutationObserver() {
+  const observer = new MutationObserver(debounce(sendPageTexts, 600));
+  observer.observe(document.documentElement, {
+    subtree: true,
+    childList: true,
+    characterData: true
+  });
+}
+
+// 초기화 실행
+initializeFiltering();
+setupMessageListener();
+setupMutationObserver();
+
+// 초기화 실행
+initializeFiltering();
+setupMessageListener();
+setupMutationObserver();
