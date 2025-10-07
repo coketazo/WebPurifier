@@ -7,7 +7,7 @@ from app.api.v1.routers import router as api_v1_router
 from mangum import Mangum
 
 
-app = FastAPI(root_path=(f"/{settings.STAGE}" if settings.STAGE else "/"))
+app = FastAPI(root_path=(f"/{settings.STAGE}" if settings.STAGE else ""))
 
 # Mangum 핸들러 생성
 handler = Mangum(app)
