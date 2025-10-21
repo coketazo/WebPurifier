@@ -1,5 +1,5 @@
 from app.services.v1.llm import generate_text
-from app.schemas.filter import FilterRequest, FilterResponse
+from app.schemas.v1.filter import FilterRequest, FilterResponse
 
 
 def detectCategory(req: FilterRequest) -> FilterResponse:

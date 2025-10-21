@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from app.core.config import settings
 from app.api.v1.routers import router as api_v1_router
+from app.api.v2.routers import router as api_v2_router
 
 from mangum import Mangum
 
@@ -26,6 +27,7 @@ if origins:
     )
 
 app.include_router(api_v1_router, prefix="/api/v1")
+app.include_router(api_v2_router, prefix="/api/v2")
 
 
 @app.get("/")
