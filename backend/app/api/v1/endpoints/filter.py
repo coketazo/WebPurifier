@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from app.schemas.filter import FilterRequest, FilterResponse
+from app.schemas.v1.filter import FilterRequest, FilterResponse
 from app.services.v1.filter import detectCategory
 
 router = APIRouter()

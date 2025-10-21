@@ -9,4 +9,9 @@ dependencies = [
     "google-genai>=1.39.1",
     "pydantic-settings>=2.11.0",
     "uvicorn>=0.37.0",
+    "pyjwt>=2.9.0",
+    "sqlalchemy>=2.0.44",
+    "psycopg>=3.2.11",
+    "pgvector>=0.4.1",
+    "sentence-transformers>=5.1.1",
 ]
