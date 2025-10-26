@@ -1,0 +1,53 @@
+# Node modules
+node_modules/
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+*.log
+logs/
+
+# Local environment files (keep shared .env in repo if needed)
+.env.local
+.env.*.local
+.env.test.local
+.env.development.local
+
+# Build / output
+dist/
+build/
+out/
+.next/
+.nuxt/
+.cache/
+.gatsby/
+# 제거 필요 시(예: CRA의 public은 보통 커밋됨)
+public/
+
+# Package manager / PnP
+.pnp
+.pnp.js
+
+# Editor / IDE
+.vscode/
+.idea/
+*.sublime-workspace
+*.sublime-project
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# TypeScript
+*.tsbuildinfo
+
+# Coverage / test
+coverage/
+.nyc_output/
+
+# Misc caches
+.sass-cache
+.cache-loader
+parcel-cache/
+.eslintcache
