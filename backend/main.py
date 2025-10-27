@@ -4,11 +4,25 @@ from fastapi.responses import RedirectResponse
 from app.core.config import settings
 from app.api.v1.routers import router as api_v1_router
 from app.api.v2.routers import router as api_v2_router
+from contextlib import asynccontextmanager
+from app.db import Base
+from app.db import engine
+from app.v2 import models
 
 from mangum import Mangum
 
 
-app = FastAPI(root_path=(f"/{settings.STAGE}" if settings.STAGE else ""))
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # 애플리케이션 시작 시 db 테이블 생성
+    Base.metadata.create_all(bind=engine)
+    yield
+    # 종료 시 수행할 작업이 있으면 여기에 추가
+
+
+app = FastAPI(
+    root_path=(f"/{settings.STAGE}" if settings.STAGE else ""), lifespan=lifespan
+)
 
 # Mangum 핸들러 생성
 handler = Mangum(app)
