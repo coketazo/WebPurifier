@@ -71,3 +71,13 @@ def create_category(
         db.rollback() # 오류 발생 시 롤백
         print(f"DB 저장 중 에러 발생: {e}")
         raise RuntimeError(f"카테고리 DB 저장 실패: {e}") from e
+
+
+def list_user_categories(db: Session, user_id: int) -> list[Category]:
+    """특정 사용자의 카테고리 목록 반환"""
+    return (
+        db.query(Category)
+        .filter(Category.user_id == user_id)
+        .order_by(Category.created_at.desc())
+        .all()
+    )
