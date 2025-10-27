@@ -1,0 +1,22 @@
+services:
+  db:
+    # 1. 사용할 PostgreSQL 이미지 (태그를 pg16으로 수정)
+    image: pgvector/pgvector:pg18
+
+    # 2. (자동화 핵심) 컨테이너 환경 변수 설정
+    environment:
+      POSTGRES_USER: myuser # 원하는 사용자 이름
+      POSTGRES_PASSWORD: mypassword # 원하는 비밀번호
+      POSTGRES_DB: mydatabase # 자동으로 생성할 데이터베이스 이름
+
+    # 3. 포트 연결
+    ports:
+      - "5432:5432"
+
+    # 4. (데이터 영구 저장) 볼륨 설정
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+# 4-1. 위에서 사용한 'postgres_data' 볼륨을 공식적으로 정의합니다.
+volumes:
+  postgres_data:
