@@ -22,8 +22,6 @@ out/
 .nuxt/
 .cache/
 .gatsby/
-# 제거 필요 시(예: CRA의 public은 보통 커밋됨)
-public/
 
 # Package manager / PnP
 .pnp
