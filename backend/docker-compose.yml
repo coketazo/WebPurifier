@@ -17,6 +17,21 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    depends_on:
+      - db
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@example.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+    ports:
+      - "8081:80"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+      # 개발 편의를 위해 서버를 자동 등록합니다 (로컬에서만 사용 권장)
+      - ./pgadmin/servers.json:/pgadmin4/servers.json:ro
+
 # 4-1. 위에서 사용한 'postgres_data' 볼륨을 공식적으로 정의합니다.
 volumes:
   postgres_data:
+  pgadmin_data:

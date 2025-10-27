@@ -1,0 +1,25 @@
+{
+  "Servers": {
+    "1": {
+      "Name": "Local Docker Postgres",
+      "Group": "Servers",
+      "Host": "db",
+      "Port": 5432,
+      "MaintenanceDB": "postgres",
+      "Username": "myuser",
+      "SSLMode": "prefer",
+      "DBRestriction": "",
+      "BackgroundProcess": false,
+      "Comment": "Auto-registered by docker-compose for local dev",
+      "Servers": {},
+      "ConnectNow": false,
+      "Shared": false,
+      "KerberosAuthentication": false,
+      "TunnelEnabled": false,
+      "PassFile": null,
+      "Role": null,
+      "DB": "mydatabase",
+      "Password": "mypassword"
+    }
+  }
+}
