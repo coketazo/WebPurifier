@@ -16,6 +16,7 @@ services:
     # 4. (데이터 영구 저장) 볼륨 설정
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./initdb/init-vector.sql:/docker-entrypoint-initdb.d/init-vector.sql:ro
 
   pgadmin:
     image: dpage/pgadmin4:latest
