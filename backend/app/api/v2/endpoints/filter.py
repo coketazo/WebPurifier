@@ -22,7 +22,7 @@ def filter_v2(
         response = similarity(
             db=db,
             user_id=user.id,
-            text_to_check=req.text,
+            texts_to_check=req.texts,
             threshold=req.threshold
         )
         return response

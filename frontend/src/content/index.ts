@@ -12,20 +12,25 @@ interface StoredConfig {
   categories?: CategoryInfo[];
 }
 
-interface FilterRequest {
-  text: string;
-  threshold: number;
-}
-
 interface MatchedCategoryInfo {
   id: number;
   name: string;
   similarity: number;
 }
 
-interface FilterResponse {
+interface FilterRequest {
+  texts: string[];
+  threshold: number;
+}
+
+interface FilterResult {
+  text: string;
   should_filter: boolean;
   matched_categories: MatchedCategoryInfo[];
+}
+
+interface FilterResponse {
+  results: FilterResult[];
 }
 
 type FeedbackType = "reinforce" | "weaken";
@@ -64,7 +69,9 @@ async function loadConfig(): Promise<StoredConfig> {
 }
 
 // storage 변경을 구독하여 설정 변경을 전달받는다
-function subscribeConfigChanges(callback: (config: StoredConfig) => void): void {
+function subscribeConfigChanges(
+  callback: (config: StoredConfig) => void
+): void {
   chrome.storage.onChanged.addListener((changes, areaName) => {
     if (areaName !== "sync") {
       return;
@@ -92,7 +99,7 @@ async function filterText(
   const response = await fetch(url, {
     method: "POST",
     headers,
-    body: JSON.stringify(payload)
+    body: JSON.stringify(payload),
   });
 
   if (!response.ok) {
@@ -117,7 +124,7 @@ async function sendFeedback(
   const response = await fetch(url, {
     method: "POST",
     headers,
-    body: JSON.stringify(payload)
+    body: JSON.stringify(payload),
   });
 
   if (!response.ok) {
@@ -129,7 +136,10 @@ async function sendFeedback(
   return (await response.json()) as FeedbackResponse;
 }
 
-async function parseApiError(response: Response, fallback: string): Promise<string> {
+async function parseApiError(
+  response: Response,
+  fallback: string
+): Promise<string> {
   try {
     const data = await response.json();
     if (typeof (data as { detail?: unknown }).detail === "string") {
@@ -152,13 +162,158 @@ function getErrorMessage(error: unknown): string {
 }
 
 // 동일한 텍스트에 대한 요청을 캐시하여 서버 부하를 줄인다
-const filterCache = new Map<string, FilterResponse>();
-const inflightRequests = new Map<string, Promise<FilterResponse>>();
+const filterCache = new Map<string, FilterResult>();
+const inflightRequests = new Map<string, Promise<FilterResult>>();
+const inflightResolvers = new Map<
+  string,
+  { resolve: (value: FilterResult) => void; reject: (reason?: unknown) => void }
+>();
+
+interface BatchItem {
+  text: string;
+  config: StoredConfig;
+}
+
+const batchQueue: BatchItem[] = [];
+let batchTimer: number | null = null;
+let batchInFlight = false;
+
+const BATCH_SIZE = 50;
+const BATCH_DELAY_MS = 25;
+
+function getConfigKey(config: StoredConfig): string {
+  return `${config.apiBaseUrl || DEFAULT_API_BASE_URL}|${config.token ?? ""}`;
+}
+
+function createFallbackResult(text: string): FilterResult {
+  return {
+    text,
+    should_filter: false,
+    matched_categories: [],
+  };
+}
+
+function scheduleBatchFlush(): void {
+  if (batchQueue.length === 0) {
+    return;
+  }
+
+  if (batchQueue.length >= BATCH_SIZE) {
+    void flushBatchQueue();
+    return;
+  }
+
+  if (batchTimer !== null) {
+    return;
+  }
+
+  batchTimer = window.setTimeout(() => {
+    batchTimer = null;
+    void flushBatchQueue();
+  }, BATCH_DELAY_MS);
+}
+
+async function flushBatchQueue(): Promise<void> {
+  if (batchInFlight || batchQueue.length === 0) {
+    return;
+  }
+
+  if (batchTimer !== null) {
+    clearTimeout(batchTimer);
+    batchTimer = null;
+  }
+
+  const first = batchQueue.shift();
+  if (!first) {
+    return;
+  }
+
+  const configKey = getConfigKey(first.config);
+  const batch: BatchItem[] = [first];
+
+  for (let i = 0; i < batchQueue.length && batch.length < BATCH_SIZE; ) {
+    if (getConfigKey(batchQueue[i].config) === configKey) {
+      batch.push(batchQueue.splice(i, 1)[0]);
+    } else {
+      i += 1;
+    }
+  }
+
+  const texts = batch.map((item) => item.text);
+  const config = first.config;
+
+  batchInFlight = true;
+  try {
+    console.log("[WebPurifier] 필터 요청(batch)", {
+      count: texts.length,
+      threshold: DEFAULT_THRESHOLD,
+      url: config.apiBaseUrl || DEFAULT_API_BASE_URL,
+    });
+
+    const response = await filterText(
+      {
+        texts,
+        threshold: DEFAULT_THRESHOLD,
+      },
+      config
+    );
+
+    response.results.forEach((result, index) => {
+      const targetText = texts[index];
+      const normalized = result ?? createFallbackResult(targetText);
+      filterCache.set(targetText, normalized);
+
+      console.log("[WebPurifier] 필터 응답", {
+        text: targetText.slice(0, 60),
+        shouldFilter: normalized.should_filter,
+        matched: normalized.matched_categories.map(
+          (item: MatchedCategoryInfo) => item.name
+        ),
+      });
+
+      const resolver = inflightResolvers.get(targetText);
+      if (resolver) {
+        resolver.resolve(normalized);
+        inflightResolvers.delete(targetText);
+      }
+      inflightRequests.delete(targetText);
+    });
+
+    // 응답에 매칭이 없을 경우 개별 fallback 적용
+    texts.forEach((targetText) => {
+      if (!filterCache.has(targetText)) {
+        const fallback = createFallbackResult(targetText);
+        filterCache.set(targetText, fallback);
+        const resolver = inflightResolvers.get(targetText);
+        if (resolver) {
+          resolver.resolve(fallback);
+          inflightResolvers.delete(targetText);
+        }
+        inflightRequests.delete(targetText);
+      }
+    });
+  } catch (error) {
+    console.error("[WebPurifier] 필터 요청 실패(batch)", error);
+    texts.forEach((targetText) => {
+      inflightRequests.delete(targetText);
+      const resolver = inflightResolvers.get(targetText);
+      if (resolver) {
+        resolver.reject(error);
+        inflightResolvers.delete(targetText);
+      }
+    });
+  } finally {
+    batchInFlight = false;
+    if (batchQueue.length > 0) {
+      scheduleBatchFlush();
+    }
+  }
+}
 
 async function getFilterResult(
   text: string,
   config: StoredConfig
-): Promise<FilterResponse> {
+): Promise<FilterResult> {
   const cached = filterCache.get(text);
   if (cached) {
     return cached;
@@ -169,41 +324,19 @@ async function getFilterResult(
     return inflight;
   }
 
-  console.log("[WebPurifier] 필터 요청", {
-    text: text.slice(0, 120),
-    threshold: DEFAULT_THRESHOLD,
-    url: config.apiBaseUrl || DEFAULT_API_BASE_URL
+  const requestPromise = new Promise<FilterResult>((resolve, reject) => {
+    inflightResolvers.set(text, { resolve, reject });
   });
 
-  const requestPromise = filterText(
-    {
-      text,
-      threshold: DEFAULT_THRESHOLD
-    },
-    config
-  )
-    .then((response) => {
-      console.log("[WebPurifier] 필터 응답", {
-        text: text.slice(0, 60),
-        shouldFilter: response.should_filter,
-        matched: response.matched_categories.map((item) => item.name)
-      });
-      filterCache.set(text, response);
-      inflightRequests.delete(text);
-      return response;
-    })
-    .catch((error) => {
-      console.error("[WebPurifier] 필터 요청 실패", error);
-      inflightRequests.delete(text);
-      throw error;
-    });
-
   inflightRequests.set(text, requestPromise);
+  batchQueue.push({ text, config });
+  scheduleBatchFlush();
+
   return requestPromise;
 }
 
 // 기본 임계값 (백엔드 기본값과 동일하게 0.75 사용)
-const DEFAULT_THRESHOLD = 0.75;
+const DEFAULT_THRESHOLD = 0.6;
 const KOREAN_REGEX = /[가-힣]/;
 const BLUR_CLASS = "webpurifier-blur";
 const PENDING_CLASS = "webpurifier-pending";
@@ -481,7 +614,10 @@ function startObserver() {
         });
       }
 
-      if (mutation.type === "characterData" && mutation.target instanceof Text) {
+      if (
+        mutation.type === "characterData" &&
+        mutation.target instanceof Text
+      ) {
         enqueueNode(mutation.target);
       }
     }
@@ -490,7 +626,7 @@ function startObserver() {
   observer.observe(document.body, {
     childList: true,
     characterData: true,
-    subtree: true
+    subtree: true,
   });
 }
 
@@ -526,7 +662,7 @@ function scanNode(node: Node) {
       return KOREAN_REGEX.test(content)
         ? NodeFilter.FILTER_ACCEPT
         : NodeFilter.FILTER_REJECT;
-    }
+    },
   });
 
   let next: Node | null;
@@ -537,7 +673,11 @@ function scanNode(node: Node) {
 
 function enqueueNode(node: Text) {
   const content = node.textContent?.trim();
-  if (!content || content.length < MIN_TEXT_LENGTH || !KOREAN_REGEX.test(content)) {
+  if (
+    !content ||
+    content.length < MIN_TEXT_LENGTH ||
+    !KOREAN_REGEX.test(content)
+  ) {
     return;
   }
   const targetElement = findBlurTarget(node.parentElement);
@@ -611,7 +751,11 @@ function processQueue() {
 
 async function evaluateNode(node: Text) {
   const content = node.textContent?.trim();
-  if (!content || content.length < MIN_TEXT_LENGTH || !KOREAN_REGEX.test(content)) {
+  if (
+    !content ||
+    content.length < MIN_TEXT_LENGTH ||
+    !KOREAN_REGEX.test(content)
+  ) {
     // 내용이 사라졌다면 이전에 적용했던 블러를 해제
     removeBlur(findBlurTarget(node.parentElement));
     return;
@@ -639,11 +783,11 @@ async function evaluateNode(node: Text) {
 
     processedText.set(node, truncated);
 
-    const response = await getFilterResult(truncated, currentConfig);
+    const result = await getFilterResult(truncated, currentConfig);
     clearPending(targetElement);
 
-    if (response.should_filter) {
-      applyBlur(targetElement, truncated, response.matched_categories);
+    if (result.should_filter) {
+      applyBlur(targetElement, truncated, result.matched_categories);
     } else {
       removeBlur(targetElement);
     }
@@ -677,7 +821,10 @@ function applyBlur(
   element.setAttribute("data-webpurifier-blurred", "true");
   const categoryNames = categories.map((item) => item.name);
   if (categoryNames.length > 0) {
-    element.setAttribute("title", `필터링된 카테고리: ${categoryNames.join(", ")}`);
+    element.setAttribute(
+      "title",
+      `필터링된 카테고리: ${categoryNames.join(", ")}`
+    );
   }
   blurredElements.add(element);
 
@@ -750,7 +897,6 @@ function markPending(element: Element | null): void {
 
   element.classList.add(PENDING_CLASS);
   element.setAttribute("data-webpurifier-pending", "true");
-
 
   pendingElements.add(element);
 }
@@ -920,8 +1066,10 @@ function showSelectionButton(rect: DOMRect): void {
   if (!selectionButton) {
     return;
   }
-  const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
-  const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
+  const viewportWidth =
+    window.innerWidth || document.documentElement.clientWidth || 0;
+  const viewportHeight =
+    window.innerHeight || document.documentElement.clientHeight || 0;
 
   if (
     rect.bottom <= 0 ||
@@ -973,7 +1121,12 @@ function updateSelectionButtonPosition(): void {
 }
 
 function openSelectionPanel(): void {
-  if (!selectionPanel || !selectionSelect || !selectionStatus || !selectionPreview) {
+  if (
+    !selectionPanel ||
+    !selectionSelect ||
+    !selectionStatus ||
+    !selectionPreview
+  ) {
     return;
   }
   if (!selectionCurrentText) {
@@ -1032,8 +1185,10 @@ function positionSelectionPanel(): void {
     return;
   }
 
-  const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
-  const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
+  const viewportWidth =
+    window.innerWidth || document.documentElement.clientWidth || 0;
+  const viewportHeight =
+    window.innerHeight || document.documentElement.clientHeight || 0;
 
   selectionPanel.style.display = "flex";
   const overlayRect = selectionPanel.getBoundingClientRect();
@@ -1147,7 +1302,7 @@ async function submitSelectionFeedback(): Promise<void> {
       {
         text_content: truncated,
         category_id: categoryId,
-        feedback_type: "reinforce"
+        feedback_type: "reinforce",
       },
       currentConfig
     );
@@ -1156,7 +1311,7 @@ async function submitSelectionFeedback(): Promise<void> {
     }
     console.log("[WebPurifier] 강화 피드백 전송 완료", {
       categoryId,
-      logId: response.new_log_id
+      logId: response.new_log_id,
     });
     scheduleSelectionStatusClear();
   } catch (error) {
@@ -1191,7 +1346,8 @@ function isNodeWithinBlurred(node: Node | null): boolean {
       return true;
     }
     current =
-      current.parentElement ?? (current.parentNode instanceof Element ? current.parentNode : null);
+      current.parentElement ??
+      (current.parentNode instanceof Element ? current.parentNode : null);
   }
   return false;
 }
@@ -1260,7 +1416,7 @@ function attachFeedbackControls(
       weakenBtn,
       text,
       categories,
-      isSending: false
+      isSending: false,
     };
 
     feedbackContextMap.set(element, newContext);
@@ -1321,16 +1477,22 @@ function updateFeedbackSelect(context: FeedbackContext): void {
     return;
   }
 
-  const hasPrevious = context.categories.some((cat) => String(cat.id) === previousValue);
-  const nextValue = hasPrevious ? previousValue : String(context.categories[0].id);
+  const hasPrevious = context.categories.some(
+    (cat) => String(cat.id) === previousValue
+  );
+  const nextValue = hasPrevious
+    ? previousValue
+    : String(context.categories[0].id);
   context.select.value = nextValue;
   context.select.disabled = context.isSending || context.categories.length <= 1;
 }
 
 function positionFeedbackOverlay(context: FeedbackContext): void {
   const rect = context.element.getBoundingClientRect();
-  const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
-  const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
+  const viewportHeight =
+    window.innerHeight || document.documentElement.clientHeight || 0;
+  const viewportWidth =
+    window.innerWidth || document.documentElement.clientWidth || 0;
 
   if (
     rect.bottom <= 0 ||
@@ -1448,7 +1610,7 @@ async function handleFeedbackSubmission(
       {
         text_content: context.text,
         category_id: categoryId,
-        feedback_type: type
+        feedback_type: type,
       },
       currentConfig
     );
@@ -1457,7 +1619,7 @@ async function handleFeedbackSubmission(
     console.log("[WebPurifier] 피드백 전송 완료", {
       type,
       categoryId,
-      logId: response.new_log_id
+      logId: response.new_log_id,
     });
   } catch (error) {
     context.status.textContent = getErrorMessage(error);
@@ -1509,11 +1671,15 @@ function cleanupRemovedNode(node: Node): void {
     removeBlur(node);
   }
 
-  node.querySelectorAll("[data-webpurifier-pending='true']").forEach((child) => {
-    clearPending(child as Element);
-  });
+  node
+    .querySelectorAll("[data-webpurifier-pending='true']")
+    .forEach((child) => {
+      clearPending(child as Element);
+    });
 
-  node.querySelectorAll("[data-webpurifier-blurred='true']").forEach((child) => {
-    removeBlur(child as Element);
-  });
+  node
+    .querySelectorAll("[data-webpurifier-blurred='true']")
+    .forEach((child) => {
+      removeBlur(child as Element);
+    });
 }

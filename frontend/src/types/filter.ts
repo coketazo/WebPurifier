@@ -1,6 +1,6 @@
 // 필터 관련 타입 (백엔드 v2 스키마 반영)
 export interface FilterRequest {
-  text: string;
+  texts: string[];
   threshold: number;
 }
 
@@ -10,7 +10,12 @@ export interface MatchedCategoryInfo {
   similarity: number;
 }
 
-export interface FilterResponse {
+export interface FilterResult {
+  text: string;
   should_filter: boolean;
   matched_categories: MatchedCategoryInfo[];
+}
+
+export interface FilterResponse {
+  results: FilterResult[];
 }

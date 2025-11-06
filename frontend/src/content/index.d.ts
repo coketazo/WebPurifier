@@ -9,18 +9,22 @@ interface StoredConfig {
     token?: string;
     categories?: CategoryInfo[];
 }
-interface FilterRequest {
-    text: string;
-    threshold: number;
-}
 interface MatchedCategoryInfo {
     id: number;
     name: string;
     similarity: number;
 }
-interface FilterResponse {
+interface FilterRequest {
+    texts: string[];
+    threshold: number;
+}
+interface FilterResult {
+    text: string;
     should_filter: boolean;
     matched_categories: MatchedCategoryInfo[];
+}
+interface FilterResponse {
+    results: FilterResult[];
 }
 type FeedbackType = "reinforce" | "weaken";
 interface FeedbackRequest {
@@ -47,10 +51,27 @@ declare function filterText(payload: FilterRequest, config: StoredConfig): Promi
 declare function sendFeedback(payload: FeedbackRequest, config: StoredConfig): Promise<FeedbackResponse>;
 declare function parseApiError(response: Response, fallback: string): Promise<string>;
 declare function getErrorMessage(error: unknown): string;
-declare const filterCache: Map<string, FilterResponse>;
-declare const inflightRequests: Map<string, Promise<FilterResponse>>;
-declare function getFilterResult(text: string, config: StoredConfig): Promise<FilterResponse>;
-declare const DEFAULT_THRESHOLD = 0.75;
+declare const filterCache: Map<string, FilterResult>;
+declare const inflightRequests: Map<string, Promise<FilterResult>>;
+declare const inflightResolvers: Map<string, {
+    resolve: (value: FilterResult) => void;
+    reject: (reason?: unknown) => void;
+}>;
+interface BatchItem {
+    text: string;
+    config: StoredConfig;
+}
+declare const batchQueue: BatchItem[];
+declare let batchTimer: number | null;
+declare let batchInFlight: boolean;
+declare const BATCH_SIZE = 50;
+declare const BATCH_DELAY_MS = 25;
+declare function getConfigKey(config: StoredConfig): string;
+declare function createFallbackResult(text: string): FilterResult;
+declare function scheduleBatchFlush(): void;
+declare function flushBatchQueue(): Promise<void>;
+declare function getFilterResult(text: string, config: StoredConfig): Promise<FilterResult>;
+declare const DEFAULT_THRESHOLD = 0.6;
 declare const KOREAN_REGEX: RegExp;
 declare const BLUR_CLASS = "webpurifier-blur";
 declare const PENDING_CLASS = "webpurifier-pending";
