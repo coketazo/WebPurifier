@@ -12,6 +12,8 @@ from pgvector.sqlalchemy import Vector  # pgvector 타입 임포트
 import datetime
 from app.db import Base
 
+EMBEDDING_DIM = 1024  # dragonkue/BGE-m3-ko outputs 1024-d vectors
+
 
 class User(Base):
     __tablename__ = "users"
@@ -31,7 +33,7 @@ class Category(Base):
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     name = Column(String(100), nullable=False)
     description = Column(Text)
-    embedding = Column(Vector(768))  # 벡터 타입 정의
+    embedding = Column(Vector(EMBEDDING_DIM))  # 벡터 타입 정의
     created_at = Column(TIMESTAMP(timezone=True), default=datetime.datetime.utcnow)
 
     owner = relationship("User", back_populates="categories")
@@ -56,7 +58,7 @@ class FeedbackLog(Base):
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     text_content = Column(Text, nullable=False)
-    text_embedding = Column(Vector(768))
+    text_embedding = Column(Vector(EMBEDDING_DIM))
     feedback_type = Column(String(10), nullable=False)  # CHECK 제약은 Alembic에서 설정
     category_id = Column(Integer, ForeignKey("categories.id"), nullable=False)
     created_at = Column(TIMESTAMP(timezone=True), default=datetime.datetime.utcnow)
