@@ -1,5 +1,5 @@
 export interface FilterRequest {
-    text: string;
+    texts: string[];
     threshold: number;
 }
 export interface MatchedCategoryInfo {
@@ -7,7 +7,11 @@ export interface MatchedCategoryInfo {
     name: string;
     similarity: number;
 }
-export interface FilterResponse {
+export interface FilterResult {
+    text: string;
     should_filter: boolean;
     matched_categories: MatchedCategoryInfo[];
+}
+export interface FilterResponse {
+    results: FilterResult[];
 }

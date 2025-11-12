@@ -5,9 +5,9 @@ from app.core.config import settings
 MODEL_NAME = settings.SBERT_MODEL_NAME
 
 # FastAPI 서버 시작 시 모델 로드 (시간이 걸릴 수 있음)
-print(f"Loading SBERT model: {MODEL_NAME}...")
+print(f"Loading Embedding model: {MODEL_NAME}...")
 try:
-    sbert_model = SentenceTransformer(MODEL_NAME)
+    sbert_model = SentenceTransformer(MODEL_NAME, trust_remote_code=True)
     print("SBERT model loaded successfully.")
 except Exception as e:
     print(f"Error loading SBERT model: {e}")
