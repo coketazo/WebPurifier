@@ -1,6 +1,6 @@
 import { jsx as _jsx, jsxs as _jsxs } from "react/jsx-runtime";
 import { useEffect, useMemo, useState } from "react";
-import { login, signup, createCategory, listCategories } from "../lib/api";
+import { login, signup, createCategory, listCategories, deleteCategory } from "../lib/api";
 import { loadConfig, saveConfig, updateConfig } from "../lib/storage";
 const initialForm = { username: "", password: "" };
 // 브라우저 팝업에서 인증, 토글, 카테고리 관리를 담당하는 메인 컴포넌트
@@ -18,6 +18,8 @@ const PopupApp = () => {
     const [categories, setCategories] = useState([]);
     const [error, setError] = useState(null);
     const [info, setInfo] = useState(null);
+    const [deletingCategoryId, setDeletingCategoryId] = useState(null);
+    const logoUrl = useMemo(() => chrome.runtime.getURL("logo.png"), []);
     // 확장 팝업이 열릴 때 저장된 설정과 카테고리를 불러온다
     useEffect(() => {
         (async () => {
@@ -178,6 +180,28 @@ const PopupApp = () => {
             setCategoryLoading(false);
         }
     };
+    const handleDeleteCategory = async (categoryId) => {
+        resetMessages();
+        setDeletingCategoryId(categoryId);
+        try {
+            await deleteCategory(categoryId, config ?? undefined);
+            const updatedCategories = categories.filter((item) => item.id !== categoryId);
+            setCategories(updatedCategories);
+            await updateConfig((prev) => ({
+                ...prev,
+                categories: updatedCategories
+            }));
+            setInfo("카테고리를 삭제했습니다.");
+        }
+        catch (err) {
+            setError(err instanceof Error
+                ? err.message
+                : "카테고리를 삭제하는 중 문제가 발생했습니다.");
+        }
+        finally {
+            setDeletingCategoryId(null);
+        }
+    };
     // 로그아웃 시 토큰과 사용자 정보를 제거
     const handleLogout = async () => {
         resetMessages();
@@ -192,12 +216,12 @@ const PopupApp = () => {
         setCategories([]);
         setInfo("로그아웃되었습니다.");
     };
-    return (_jsxs("div", { className: "popup-root", children: [_jsxs("header", { className: "popup-header", children: [_jsx("h1", { children: "WebPurifier" }), isAuthenticated && config?.user && (_jsxs("p", { className: "welcome", children: ["\uC548\uB155\uD558\uC138\uC694, ", config.user.username, "\uB2D8"] }))] }), error && _jsx("div", { className: "alert alert-error", children: error }), info && _jsx("div", { className: "alert alert-info", children: info }), !isAuthenticated ? (_jsxs("section", { children: [_jsxs("div", { className: "tab-group", children: [_jsx("button", { className: mode === "login" ? "tab active" : "tab", onClick: () => {
+    return (_jsxs("div", { className: "popup-root", children: [_jsxs("header", { className: "popup-header", children: [_jsxs("div", { className: "popup-title", children: [_jsx("img", { src: logoUrl, alt: "WebPurifier \uB85C\uACE0", className: "popup-logo" }), _jsx("h1", { children: "WebPurifier" })] }), isAuthenticated && config?.user && (_jsxs("p", { className: "welcome", children: ["\uC548\uB155\uD558\uC138\uC694, ", config.user.username, "\uB2D8"] }))] }), error && _jsx("div", { className: "alert alert-error", children: error }), info && _jsx("div", { className: "alert alert-info", children: info }), !isAuthenticated ? (_jsxs("section", { children: [_jsxs("div", { className: "tab-group", children: [_jsx("button", { className: mode === "login" ? "tab active" : "tab", onClick: () => {
                                     setMode("login");
                                     resetMessages();
                                 }, children: "\uB85C\uADF8\uC778" }), _jsx("button", { className: mode === "signup" ? "tab active" : "tab", onClick: () => {
                                     setMode("signup");
                                     resetMessages();
-                                }, children: "\uD68C\uC6D0\uAC00\uC785" })] }), _jsxs("form", { className: "auth-form", onSubmit: handleAuthSubmit, children: [_jsxs("label", { className: "form-field", children: [_jsx("span", { children: "\uC544\uC774\uB514" }), _jsx("input", { name: "username", value: form.username, onChange: handleInputChange, placeholder: "\uC544\uC774\uB514", autoComplete: "username", disabled: loading })] }), _jsxs("label", { className: "form-field", children: [_jsx("span", { children: "\uBE44\uBC00\uBC88\uD638" }), _jsx("input", { type: "password", name: "password", value: form.password, onChange: handleInputChange, placeholder: "\uBE44\uBC00\uBC88\uD638", autoComplete: "current-password", disabled: loading })] }), _jsx("button", { type: "submit", className: "primary", disabled: loading, children: loading ? "처리 중..." : mode === "login" ? "로그인" : "회원가입" })] })] })) : (_jsxs("section", { className: "authenticated", children: [_jsxs("div", { className: "toggle-row", children: [_jsx("span", { children: "\uD544\uD130\uB9C1 \uD65C\uC131\uD654" }), _jsxs("label", { className: "switch", children: [_jsx("input", { type: "checkbox", checked: Boolean(config?.isEnabled), onChange: handleToggle }), _jsx("span", { className: "slider" })] })] }), _jsxs("div", { className: "category-block", children: [_jsxs("div", { className: "category-header", children: [_jsx("h2", { children: "\uCE74\uD14C\uACE0\uB9AC \uBAA9\uB85D" }), _jsx("button", { className: "secondary", onClick: refreshCategories, disabled: categoryLoading, children: "\uC0C8\uB85C\uACE0\uCE68" })] }), categoryLoading && _jsx("p", { className: "hint", children: "\uCE74\uD14C\uACE0\uB9AC \uC815\uBCF4\uB97C \uBD88\uB7EC\uC624\uB294 \uC911..." }), categories.length === 0 && !categoryLoading ? (_jsx("p", { className: "hint", children: "\uB4F1\uB85D\uB41C \uCE74\uD14C\uACE0\uB9AC\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4." })) : (_jsx("ul", { className: "category-list", children: categories.map((category) => (_jsxs("li", { children: [_jsx("strong", { children: category.name }), category.description && _jsx("p", { children: category.description })] }, category.id))) })), _jsxs("form", { className: "category-form", onSubmit: handleCategorySubmit, children: [_jsx("h3", { children: "\uCE74\uD14C\uACE0\uB9AC \uCD94\uAC00" }), _jsxs("label", { className: "form-field", children: [_jsx("span", { children: "\uCE74\uD14C\uACE0\uB9AC \uC774\uB984" }), _jsx("input", { name: "name", value: categoryForm.name, onChange: handleCategoryInputChange, placeholder: "\uC608: \uC2A4\uD3EC\uC77C\uB7EC", disabled: categoryLoading })] }), _jsxs("label", { className: "form-field", children: [_jsx("span", { children: "\uD0A4\uC6CC\uB4DC (\uC27C\uD45C\uB85C \uAD6C\uBD84)" }), _jsx("input", { name: "keywords", value: categoryForm.keywords, onChange: handleCategoryInputChange, placeholder: "\uC608: \uACB0\uB9D0, \uC2A4\uD3EC", disabled: categoryLoading })] }), _jsxs("label", { className: "form-field", children: [_jsx("span", { children: "\uC124\uBA85 (\uC120\uD0DD)" }), _jsx("textarea", { name: "description", value: categoryForm.description, onChange: handleCategoryInputChange, placeholder: "\uCE74\uD14C\uACE0\uB9AC \uC124\uBA85\uC744 \uC785\uB825\uD574\uC8FC\uC138\uC694", disabled: categoryLoading })] }), _jsx("button", { type: "submit", className: "primary", disabled: categoryLoading, children: categoryLoading ? "저장 중..." : "카테고리 등록" })] })] }), _jsx("button", { className: "logout", onClick: handleLogout, children: "\uB85C\uADF8\uC544\uC6C3" })] })), _jsx("footer", { className: "popup-footer", children: _jsxs("p", { children: ["API \uAE30\uBCF8 \uC8FC\uC18C: ", config?.apiBaseUrl ?? "미설정"] }) })] }));
+                                }, children: "\uD68C\uC6D0\uAC00\uC785" })] }), _jsxs("form", { className: "auth-form", onSubmit: handleAuthSubmit, children: [_jsxs("label", { className: "form-field", children: [_jsx("span", { children: "\uC544\uC774\uB514" }), _jsx("input", { name: "username", value: form.username, onChange: handleInputChange, placeholder: "\uC544\uC774\uB514", autoComplete: "username", disabled: loading })] }), _jsxs("label", { className: "form-field", children: [_jsx("span", { children: "\uBE44\uBC00\uBC88\uD638" }), _jsx("input", { type: "password", name: "password", value: form.password, onChange: handleInputChange, placeholder: "\uBE44\uBC00\uBC88\uD638", autoComplete: "current-password", disabled: loading })] }), _jsx("button", { type: "submit", className: "primary", disabled: loading, children: loading ? "처리 중..." : mode === "login" ? "로그인" : "회원가입" })] })] })) : (_jsxs("section", { className: "authenticated", children: [_jsxs("div", { className: "toggle-row", children: [_jsx("span", { children: "\uD544\uD130\uB9C1 \uD65C\uC131\uD654" }), _jsxs("label", { className: "switch", children: [_jsx("input", { type: "checkbox", checked: Boolean(config?.isEnabled), onChange: handleToggle }), _jsx("span", { className: "slider" })] })] }), _jsxs("div", { className: "category-block", children: [_jsxs("div", { className: "category-header", children: [_jsx("h2", { children: "\uCE74\uD14C\uACE0\uB9AC \uBAA9\uB85D" }), _jsx("button", { className: "secondary", onClick: refreshCategories, disabled: categoryLoading, children: "\uC0C8\uB85C\uACE0\uCE68" })] }), categoryLoading && _jsx("p", { className: "hint", children: "\uCE74\uD14C\uACE0\uB9AC \uC815\uBCF4\uB97C \uBD88\uB7EC\uC624\uB294 \uC911..." }), categories.length === 0 && !categoryLoading ? (_jsx("p", { className: "hint", children: "\uB4F1\uB85D\uB41C \uCE74\uD14C\uACE0\uB9AC\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4." })) : (_jsx("ul", { className: "category-list", children: categories.map((category) => (_jsxs("li", { className: "category-item", children: [_jsxs("div", { className: "category-details", children: [_jsx("strong", { children: category.name }), category.description && _jsx("p", { children: category.description })] }), _jsx("button", { type: "button", className: "category-delete", onClick: () => handleDeleteCategory(category.id), disabled: categoryLoading || deletingCategoryId === category.id, children: deletingCategoryId === category.id ? "삭제 중..." : "삭제" })] }, category.id))) })), _jsxs("form", { className: "category-form", onSubmit: handleCategorySubmit, children: [_jsx("h3", { children: "\uCE74\uD14C\uACE0\uB9AC \uCD94\uAC00" }), _jsxs("label", { className: "form-field", children: [_jsx("span", { children: "\uCE74\uD14C\uACE0\uB9AC \uC774\uB984" }), _jsx("input", { name: "name", value: categoryForm.name, onChange: handleCategoryInputChange, placeholder: "\uC608: \uC2A4\uD3EC\uC77C\uB7EC", disabled: categoryLoading })] }), _jsxs("label", { className: "form-field", children: [_jsx("span", { children: "\uD0A4\uC6CC\uB4DC (\uC27C\uD45C\uB85C \uAD6C\uBD84)" }), _jsx("input", { name: "keywords", value: categoryForm.keywords, onChange: handleCategoryInputChange, placeholder: "\uC608: \uACB0\uB9D0, \uC2A4\uD3EC", disabled: categoryLoading })] }), _jsxs("label", { className: "form-field", children: [_jsx("span", { children: "\uC124\uBA85 (\uC120\uD0DD)" }), _jsx("textarea", { name: "description", value: categoryForm.description, onChange: handleCategoryInputChange, placeholder: "\uCE74\uD14C\uACE0\uB9AC \uC124\uBA85\uC744 \uC785\uB825\uD574\uC8FC\uC138\uC694", disabled: categoryLoading })] }), _jsx("button", { type: "submit", className: "primary", disabled: categoryLoading, children: categoryLoading ? "저장 중..." : "카테고리 등록" })] })] }), _jsx("button", { className: "logout", onClick: handleLogout, children: "\uB85C\uADF8\uC544\uC6C3" })] })), _jsx("footer", { className: "popup-footer", children: _jsxs("p", { children: ["API \uAE30\uBCF8 \uC8FC\uC18C: ", config?.apiBaseUrl ?? "미설정"] }) })] }));
 };
 export default PopupApp;

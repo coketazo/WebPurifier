@@ -1,5 +1,5 @@
 import type { LoginRequest, LoginResponse, SignupRequest, SignupResponse } from "../types/auth";
-import type { CategoryCreateRequest, CategoryResponse } from "../types/category";
+import type { CategoryCreateRequest, CategoryResponse, CategoryDeleteResponse } from "../types/category";
 import type { FilterRequest, FilterResponse } from "../types/filter";
 import type { StoredConfig } from "../types/storage";
 import type { FeedbackRequest, FeedbackResponse } from "../types/feedback";
@@ -7,5 +7,6 @@ export declare function signup(payload: SignupRequest): Promise<SignupResponse>;
 export declare function login(payload: LoginRequest): Promise<LoginResponse>;
 export declare function createCategory(payload: CategoryCreateRequest, configOverride?: StoredConfig): Promise<CategoryResponse>;
 export declare function listCategories(configOverride?: StoredConfig): Promise<CategoryResponse[]>;
+export declare function deleteCategory(categoryId: number, configOverride?: StoredConfig): Promise<CategoryDeleteResponse>;
 export declare function filterText(payload: FilterRequest, configOverride?: StoredConfig): Promise<FilterResponse>;
 export declare function submitFeedback(payload: FeedbackRequest, configOverride?: StoredConfig): Promise<FeedbackResponse>;

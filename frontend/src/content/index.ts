@@ -339,6 +339,7 @@ async function getFilterResult(
 const DEFAULT_THRESHOLD = 0.6;
 const KOREAN_REGEX = /[가-힣]/;
 const BLUR_CLASS = "webpurifier-blur";
+const BLUR_REVEAL_CLASS = "webpurifier-blur-reveal";
 const PENDING_CLASS = "webpurifier-pending";
 const FEEDBACK_PANEL_CLASS = "webpurifier-feedback-panel";
 const FEEDBACK_SELECT_CLASS = "webpurifier-feedback-select";
@@ -404,7 +405,9 @@ interface FeedbackContext {
 
 const feedbackContextMap = new WeakMap<Element, FeedbackContext>();
 const feedbackContextSet = new Set<FeedbackContext>();
+const blurClickHandlerMap = new WeakMap<Element, EventListener>();
 let feedbackListenersAttached = false;
+let activeFeedbackContext: FeedbackContext | null = null;
 
 let selectionButton: HTMLButtonElement | null = null;
 let selectionPanel: HTMLElement | null = null;
@@ -417,6 +420,36 @@ let selectionIsSending = false;
 let selectionStatusTimer: number | undefined;
 let selectionListenersAttached = false;
 let selectionAnchorRect: DOMRect | null = null;
+let selectionInteractionActive = false;
+let selectionInteractionTimer: number | undefined;
+
+function markSelectionInteraction(): void {
+  selectionInteractionActive = true;
+  if (selectionInteractionTimer) {
+    window.clearTimeout(selectionInteractionTimer);
+  }
+  selectionInteractionTimer = window.setTimeout(() => {
+    selectionInteractionActive = false;
+    selectionInteractionTimer = undefined;
+  }, 300);
+}
+
+function isSelectionPanelInteraction(): boolean {
+  if (selectionInteractionActive) {
+    return true;
+  }
+  if (!selectionPanel || selectionPanel.style.display === "none") {
+    return false;
+  }
+  const active = document.activeElement;
+  if (active && selectionPanel.contains(active)) {
+    return true;
+  }
+  if (selectionButton && active && selectionButton.contains(active)) {
+    return true;
+  }
+  return false;
+}
 
 // 최초 실행: 저장소에서 설정을 불러오고 필요 시 감시 시작
 init();
@@ -462,6 +495,7 @@ function ensureStyle() {
   }
   const style = document.createElement("style");
   style.textContent = `.${BLUR_CLASS} { filter: blur(6px) !important; transition: filter 0.2s ease-in-out; }
+.${BLUR_CLASS}.${BLUR_REVEAL_CLASS} { filter: none !important; }
 .${PENDING_CLASS} {
   opacity: 0 !important;
   pointer-events: none !important;
@@ -490,14 +524,17 @@ function ensureStyle() {
 }
 .${FEEDBACK_SELECT_CLASS} {
   border: none;
-  background: rgba(255, 255, 255, 0.15);
-  color: #fff;
+  background: rgba(255, 255, 255, 0.9);
+  color: #0f172a;
   font-size: 12px;
   border-radius: 4px;
   padding: 2px 4px;
 }
 .${FEEDBACK_SELECT_CLASS}:focus {
-  outline: 1px solid rgba(255, 255, 255, 0.6);
+  outline: 1px solid rgba(56, 189, 248, 0.8);
+}
+.${FEEDBACK_SELECT_CLASS} option {
+  color: #0f172a;
 }
 .${FEEDBACK_BUTTON_CLASS} {
   border: none;
@@ -529,17 +566,18 @@ function ensureStyle() {
   height: 28px;
   border-radius: 50%;
   border: none;
-  background: rgba(87, 202, 120, 0.9);
-  color: #111;
+  background-color: rgba(87, 202, 120, 0.9);
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: 65%;
   cursor: pointer;
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
   display: none;
   align-items: center;
   justify-content: center;
-  font-size: 16px;
 }
 .${SELECTION_BUTTON_CLASS}:hover {
-  background: rgba(87, 202, 120, 1);
+  background-color: rgba(87, 202, 120, 1);
 }
 .${SELECTION_PANEL_CLASS} {
   position: fixed;
@@ -571,11 +609,14 @@ function ensureStyle() {
   border-radius: 4px;
   padding: 4px 6px;
   font-size: 12px;
-  background: rgba(255, 255, 255, 0.2);
-  color: #fff;
+  background: rgba(255, 255, 255, 0.95);
+  color: #0f172a;
 }
 .${SELECTION_SELECT_CLASS}:focus {
-  outline: 1px solid rgba(255, 255, 255, 0.65);
+  outline: 1px solid rgba(56, 189, 248, 0.8);
+}
+.${SELECTION_SELECT_CLASS} option {
+  color: #0f172a;
 }
 .${SELECTION_STATUS_CLASS} {
   font-size: 11px;
@@ -843,6 +884,7 @@ function removeBlur(element: Element | null) {
   if (!element.hasAttribute("data-webpurifier-blurred")) {
     return;
   }
+  restoreBlurredElement(element);
   element.classList.remove(BLUR_CLASS);
   element.removeAttribute("data-webpurifier-blurred");
   element.removeAttribute("title");
@@ -926,8 +968,17 @@ function ensureSelectionControls(): void {
     const button = document.createElement("button");
     button.type = "button";
     button.className = SELECTION_BUTTON_CLASS;
-    button.textContent = "강";
     button.style.display = "none";
+    const iconUrl = chrome.runtime.getURL("logo.png");
+    button.style.backgroundImage = `url(${iconUrl})`;
+    button.style.backgroundSize = "65%";
+    button.style.backgroundRepeat = "no-repeat";
+    button.style.backgroundPosition = "center";
+    button.setAttribute("aria-label", "강화 피드백 열기");
+    button.title = "강화 피드백 열기";
+    button.addEventListener("pointerdown", () => {
+      markSelectionInteraction();
+    });
     button.addEventListener("click", () => {
       openSelectionPanel();
     });
@@ -939,6 +990,9 @@ function ensureSelectionControls(): void {
     const panel = document.createElement("div");
     panel.className = SELECTION_PANEL_CLASS;
     panel.style.display = "none";
+    panel.addEventListener("pointerdown", () => {
+      markSelectionInteraction();
+    });
 
     const preview = document.createElement("span");
     preview.className = SELECTION_PREVIEW_CLASS;
@@ -947,12 +1001,18 @@ function ensureSelectionControls(): void {
 
     const select = document.createElement("select");
     select.className = SELECTION_SELECT_CLASS;
+    select.addEventListener("pointerdown", () => {
+      markSelectionInteraction();
+    });
     panel.appendChild(select);
     selectionSelect = select;
 
     const sendButton = document.createElement("button");
     sendButton.type = "button";
     sendButton.textContent = "강화 피드백 전송";
+    sendButton.addEventListener("pointerdown", () => {
+      markSelectionInteraction();
+    });
     panel.appendChild(sendButton);
     selectionSendButton = sendButton;
 
@@ -999,6 +1059,10 @@ function detachSelectionListeners(): void {
 function handleSelectionChange(): void {
   if (!currentConfig?.isEnabled || !currentConfig.token) {
     hideSelectionControls();
+    return;
+  }
+
+  if (isSelectionPanelInteraction()) {
     return;
   }
 
@@ -1385,8 +1449,9 @@ function attachFeedbackControls(
   let targetContext = feedbackContextMap.get(element);
 
   if (!targetContext) {
-    const overlay = document.createElement("div");
+  const overlay = document.createElement("div");
     overlay.className = FEEDBACK_PANEL_CLASS;
+  overlay.style.display = "none";
 
     const label = document.createElement("span");
     label.textContent = "카테고리";
@@ -1423,6 +1488,7 @@ function attachFeedbackControls(
     feedbackContextSet.add(newContext);
     document.body.appendChild(overlay);
     ensureFeedbackListeners();
+    ensureBlurClickHandler(element);
 
     weakenBtn.addEventListener("click", (event) => {
       event.preventDefault();
@@ -1449,11 +1515,11 @@ function attachFeedbackControls(
 
   updateFeedbackSelect(targetContext);
   targetContext.status.textContent = "";
-  positionFeedbackOverlay(targetContext);
-  const contextRef = targetContext;
-  window.requestAnimationFrame(() => {
-    positionFeedbackOverlay(contextRef);
-  });
+  if (activeFeedbackContext === targetContext) {
+    showFeedbackOverlay(targetContext);
+  } else {
+    hideFeedbackOverlay(targetContext);
+  }
 }
 
 function updateFeedbackSelect(context: FeedbackContext): void {
@@ -1488,6 +1554,9 @@ function updateFeedbackSelect(context: FeedbackContext): void {
 }
 
 function positionFeedbackOverlay(context: FeedbackContext): void {
+  if (context.overlay.style.display === "none") {
+    return;
+  }
   const rect = context.element.getBoundingClientRect();
   const viewportHeight =
     window.innerHeight || document.documentElement.clientHeight || 0;
@@ -1500,11 +1569,14 @@ function positionFeedbackOverlay(context: FeedbackContext): void {
     rect.right <= 0 ||
     rect.left >= viewportWidth
   ) {
-    context.overlay.style.display = "none";
+    hideFeedbackOverlay(context);
+    if (activeFeedbackContext === context) {
+      restoreBlurredElement(context.element);
+      activeFeedbackContext = null;
+    }
     return;
   }
 
-  context.overlay.style.display = "flex";
   const overlayRect = context.overlay.getBoundingClientRect();
 
   let top = rect.top - overlayRect.height - 6;
@@ -1526,8 +1598,124 @@ function positionFeedbackOverlay(context: FeedbackContext): void {
 
 function refreshFeedbackOverlayPositions(): void {
   feedbackContextSet.forEach((context) => {
-    positionFeedbackOverlay(context);
+    if (context.overlay.style.display !== "none") {
+      positionFeedbackOverlay(context);
+    }
   });
+}
+
+function showFeedbackOverlay(context: FeedbackContext): void {
+  context.overlay.style.display = "flex";
+  positionFeedbackOverlay(context);
+}
+
+function hideFeedbackOverlay(context: FeedbackContext): void {
+  context.overlay.style.display = "none";
+}
+
+function ensureBlurClickHandler(element: Element): void {
+  if (blurClickHandlerMap.has(element)) {
+    return;
+  }
+  const handler = (event: Event) => {
+    handleBlurredElementClick(element, event as MouseEvent);
+  };
+  blurClickHandlerMap.set(element, handler);
+  element.addEventListener("click", handler, true);
+}
+
+function removeBlurClickHandler(element: Element): void {
+  const handler = blurClickHandlerMap.get(element);
+  if (!handler) {
+    return;
+  }
+  element.removeEventListener("click", handler, true);
+  blurClickHandlerMap.delete(element);
+}
+
+function handleBlurredElementClick(element: Element, event: MouseEvent): void {
+  if (event.button !== 0) {
+    return;
+  }
+  const context = feedbackContextMap.get(element);
+  if (!context || !currentConfig?.token) {
+    return;
+  }
+  event.preventDefault();
+  event.stopPropagation();
+  activateWeakenFeedback(context);
+}
+
+function activateWeakenFeedback(context: FeedbackContext): void {
+  if (activeFeedbackContext && activeFeedbackContext !== context) {
+    deactivateWeakenFeedback(activeFeedbackContext);
+  }
+  revealBlurredElement(context.element);
+  showFeedbackOverlay(context);
+  activeFeedbackContext = context;
+}
+
+function deactivateWeakenFeedback(context?: FeedbackContext): void {
+  const target = context ?? activeFeedbackContext;
+  if (!target) {
+    return;
+  }
+  hideFeedbackOverlay(target);
+  restoreBlurredElement(target.element);
+  if (activeFeedbackContext === target) {
+    activeFeedbackContext = null;
+  }
+}
+
+function revealBlurredElement(element: Element | null): void {
+  if (!(element instanceof HTMLElement)) {
+    return;
+  }
+  if (element.getAttribute("data-webpurifier-revealed") === "true") {
+    return;
+  }
+  element.setAttribute("data-webpurifier-revealed", "true");
+  element.classList.add(BLUR_REVEAL_CLASS);
+  if (element.dataset.webpurifierOriginalFilter !== undefined) {
+    element.style.filter = element.dataset.webpurifierOriginalFilter;
+  } else {
+    element.style.removeProperty("filter");
+  }
+}
+
+function restoreBlurredElement(element: Element | null): void {
+  if (!(element instanceof HTMLElement)) {
+    return;
+  }
+  if (element.getAttribute("data-webpurifier-revealed") !== "true") {
+    return;
+  }
+  element.classList.remove(BLUR_REVEAL_CLASS);
+  element.removeAttribute("data-webpurifier-revealed");
+  if (element.hasAttribute("data-webpurifier-blurred")) {
+    element.style.filter = "blur(6px)";
+  } else if (element.dataset.webpurifierOriginalFilter !== undefined) {
+    element.style.filter = element.dataset.webpurifierOriginalFilter;
+  } else {
+    element.style.removeProperty("filter");
+  }
+}
+
+function handleFeedbackOutsideClick(event: MouseEvent): void {
+  if (!activeFeedbackContext) {
+    return;
+  }
+  const target = event.target as Node | null;
+  if (!target) {
+    return;
+  }
+  if (
+    activeFeedbackContext.overlay.contains(target) ||
+    activeFeedbackContext.element.contains(target)
+  ) {
+    return;
+  }
+  deactivateWeakenFeedback();
 }
 
 function ensureFeedbackListeners(): void {
@@ -1536,6 +1724,7 @@ function ensureFeedbackListeners(): void {
   }
   window.addEventListener("scroll", refreshFeedbackOverlayPositions, true);
   window.addEventListener("resize", refreshFeedbackOverlayPositions);
+  document.addEventListener("mousedown", handleFeedbackOutsideClick, true);
   feedbackListenersAttached = true;
 }
 
@@ -1545,6 +1734,7 @@ function teardownFeedbackListeners(): void {
   }
   window.removeEventListener("scroll", refreshFeedbackOverlayPositions, true);
   window.removeEventListener("resize", refreshFeedbackOverlayPositions);
+  document.removeEventListener("mousedown", handleFeedbackOutsideClick, true);
   feedbackListenersAttached = false;
 }
 
@@ -1559,9 +1749,17 @@ function detachFeedback(element: Element): void {
     context.statusTimer = undefined;
   }
 
+  if (activeFeedbackContext === context) {
+    deactivateWeakenFeedback(context);
+  } else {
+    hideFeedbackOverlay(context);
+    restoreBlurredElement(context.element);
+  }
+
   feedbackContextMap.delete(element);
   feedbackContextSet.delete(context);
   context.overlay.remove();
+  removeBlurClickHandler(element);
 
   if (feedbackContextSet.size === 0) {
     teardownFeedbackListeners();
@@ -1574,8 +1772,10 @@ function clearAllFeedback(): void {
       window.clearTimeout(context.statusTimer);
       context.statusTimer = undefined;
     }
+    deactivateWeakenFeedback(context);
     context.overlay.remove();
     feedbackContextMap.delete(context.element);
+    removeBlurClickHandler(context.element);
   });
   feedbackContextSet.clear();
   teardownFeedbackListeners();
@@ -1642,6 +1842,9 @@ function scheduleStatusClear(context: FeedbackContext): void {
   context.statusTimer = window.setTimeout(() => {
     context.status.textContent = "";
     context.statusTimer = undefined;
+    if (activeFeedbackContext === context) {
+      deactivateWeakenFeedback(context);
+    }
   }, FEEDBACK_SUCCESS_TIMEOUT);
 }
 

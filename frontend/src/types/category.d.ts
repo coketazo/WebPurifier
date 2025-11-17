@@ -8,3 +8,10 @@ export interface CategoryResponse {
     name: string;
     description: string | null;
 }
+export interface CategoryDeleteRequest {
+    id: number;
+}
+export interface CategoryDeleteResponse {
+    id: number;
+    message: string;
+}

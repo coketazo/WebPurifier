@@ -74,6 +74,7 @@ declare function getFilterResult(text: string, config: StoredConfig): Promise<Fi
 declare const DEFAULT_THRESHOLD = 0.6;
 declare const KOREAN_REGEX: RegExp;
 declare const BLUR_CLASS = "webpurifier-blur";
+declare const BLUR_REVEAL_CLASS = "webpurifier-blur-reveal";
 declare const PENDING_CLASS = "webpurifier-pending";
 declare const FEEDBACK_PANEL_CLASS = "webpurifier-feedback-panel";
 declare const FEEDBACK_SELECT_CLASS = "webpurifier-feedback-select";
@@ -117,7 +118,9 @@ interface FeedbackContext {
 }
 declare const feedbackContextMap: WeakMap<Element, FeedbackContext>;
 declare const feedbackContextSet: Set<FeedbackContext>;
+declare const blurClickHandlerMap: WeakMap<Element, EventListener>;
 declare let feedbackListenersAttached: boolean;
+declare let activeFeedbackContext: FeedbackContext | null;
 declare let selectionButton: HTMLButtonElement | null;
 declare let selectionPanel: HTMLElement | null;
 declare let selectionSelect: HTMLSelectElement | null;
@@ -129,6 +132,10 @@ declare let selectionIsSending: boolean;
 declare let selectionStatusTimer: number | undefined;
 declare let selectionListenersAttached: boolean;
 declare let selectionAnchorRect: DOMRect | null;
+declare let selectionInteractionActive: boolean;
+declare let selectionInteractionTimer: number | undefined;
+declare function markSelectionInteraction(): void;
+declare function isSelectionPanelInteraction(): boolean;
 declare function init(): Promise<void>;
 declare function applyConfig(config: StoredConfig): void;
 declare function ensureStyle(): void;
@@ -171,6 +178,16 @@ declare function attachFeedbackControls(element: Element, text: string, categori
 declare function updateFeedbackSelect(context: FeedbackContext): void;
 declare function positionFeedbackOverlay(context: FeedbackContext): void;
 declare function refreshFeedbackOverlayPositions(): void;
+declare function showFeedbackOverlay(context: FeedbackContext): void;
+declare function hideFeedbackOverlay(context: FeedbackContext): void;
+declare function ensureBlurClickHandler(element: Element): void;
+declare function removeBlurClickHandler(element: Element): void;
+declare function handleBlurredElementClick(element: Element, event: MouseEvent): void;
+declare function activateWeakenFeedback(context: FeedbackContext): void;
+declare function deactivateWeakenFeedback(context?: FeedbackContext): void;
+declare function revealBlurredElement(element: Element | null): void;
+declare function restoreBlurredElement(element: Element | null): void;
+declare function handleFeedbackOutsideClick(event: MouseEvent): void;
 declare function ensureFeedbackListeners(): void;
 declare function teardownFeedbackListeners(): void;
 declare function detachFeedback(element: Element): void;

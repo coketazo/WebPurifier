@@ -1,5 +1,11 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { login, signup, createCategory, listCategories } from "../lib/api";
+import {
+  login,
+  signup,
+  createCategory,
+  listCategories,
+  deleteCategory
+} from "../lib/api";
 import { loadConfig, saveConfig, updateConfig } from "../lib/storage";
 import type { LoginRequest, SignupRequest } from "../types/auth";
 import type { CategoryCreateRequest, CategoryResponse } from "../types/category";
@@ -33,6 +39,8 @@ const PopupApp: React.FC = () => {
   const [categories, setCategories] = useState<CategoryResponse[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
+  const [deletingCategoryId, setDeletingCategoryId] = useState<number | null>(null);
+  const logoUrl = useMemo(() => chrome.runtime.getURL("logo.png"), []);
 
   // 확장 팝업이 열릴 때 저장된 설정과 카테고리를 불러온다
   useEffect(() => {
@@ -53,8 +61,8 @@ const PopupApp: React.FC = () => {
   const handleCategoryInputChange = (
     event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>
   ) => {
-  const { name, value } = event.target;
-  setCategoryForm((prev: CategoryFormState) => ({ ...prev, [name]: value }));
+    const { name, value } = event.target;
+    setCategoryForm((prev: CategoryFormState) => ({ ...prev, [name]: value }));
   };
 
   const resetMessages = () => {
@@ -209,6 +217,29 @@ const PopupApp: React.FC = () => {
     }
   };
 
+  const handleDeleteCategory = async (categoryId: number) => {
+    resetMessages();
+    setDeletingCategoryId(categoryId);
+    try {
+      await deleteCategory(categoryId, config ?? undefined);
+      const updatedCategories = categories.filter((item) => item.id !== categoryId);
+      setCategories(updatedCategories);
+      await updateConfig((prev) => ({
+        ...prev,
+        categories: updatedCategories
+      }));
+      setInfo("카테고리를 삭제했습니다.");
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "카테고리를 삭제하는 중 문제가 발생했습니다."
+      );
+    } finally {
+      setDeletingCategoryId(null);
+    }
+  };
+
   // 로그아웃 시 토큰과 사용자 정보를 제거
   const handleLogout = async () => {
     resetMessages();
@@ -227,7 +258,10 @@ const PopupApp: React.FC = () => {
   return (
     <div className="popup-root">
       <header className="popup-header">
-        <h1>WebPurifier</h1>
+        <div className="popup-title">
+          <img src={logoUrl} alt="WebPurifier 로고" className="popup-logo" />
+          <h1>WebPurifier</h1>
+        </div>
         {isAuthenticated && config?.user && (
           <p className="welcome">안녕하세요, {config.user.username}님</p>
         )}
@@ -321,9 +355,21 @@ const PopupApp: React.FC = () => {
             ) : (
               <ul className="category-list">
                 {categories.map((category) => (
-                  <li key={category.id}>
-                    <strong>{category.name}</strong>
-                    {category.description && <p>{category.description}</p>}
+                  <li key={category.id} className="category-item">
+                    <div className="category-details">
+                      <strong>{category.name}</strong>
+                      {category.description && <p>{category.description}</p>}
+                    </div>
+                    <button
+                      type="button"
+                      className="category-delete"
+                      onClick={() => handleDeleteCategory(category.id)}
+                      disabled={
+                        categoryLoading || deletingCategoryId === category.id
+                      }
+                    >
+                      {deletingCategoryId === category.id ? "삭제 중..." : "삭제"}
+                    </button>
                   </li>
                 ))}
               </ul>
