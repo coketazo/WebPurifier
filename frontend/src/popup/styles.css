@@ -25,6 +25,19 @@ body {
   margin-bottom: 12px;
 }
 
+.popup-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.popup-logo {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  flex-shrink: 0;
+}
+
 .popup-header h1 {
   font-size: 20px;
   margin: 0;
@@ -219,6 +232,32 @@ body {
   margin: 4px 0 0 0;
   font-size: 13px;
   opacity: 0.85;
+}
+
+.category-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.category-details {
+  flex: 1;
+}
+
+.category-delete {
+  border: none;
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  background: rgba(248, 113, 113, 0.25);
+  color: #fecaca;
+}
+
+.category-delete:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .hint {

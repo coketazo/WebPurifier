@@ -7,7 +7,8 @@ import type {
 } from "../types/auth";
 import type {
   CategoryCreateRequest,
-  CategoryResponse
+  CategoryResponse,
+  CategoryDeleteResponse
 } from "../types/category";
 import type { FilterRequest, FilterResponse } from "../types/filter";
 import { loadConfig } from "./storage";
@@ -102,6 +103,20 @@ export async function listCategories(
     "/api/v2/category",
     {
       method: "GET"
+    },
+    configOverride
+  );
+}
+
+export async function deleteCategory(
+  categoryId: number,
+  configOverride?: StoredConfig
+): Promise<CategoryDeleteResponse> {
+  return callApi<CategoryDeleteResponse>(
+    "/api/v2/category",
+    {
+      method: "DELETE",
+      body: JSON.stringify({ id: categoryId })
     },
     configOverride
   );
