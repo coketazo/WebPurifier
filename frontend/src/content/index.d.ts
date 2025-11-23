@@ -91,6 +91,15 @@ declare const MIN_TEXT_LENGTH = 6;
 declare const DEBOUNCE_MS = 150;
 declare const MAX_CONCURRENT_REQUESTS = 6;
 declare const VIEWPORT_MARGIN = 200;
+interface CachedRect {
+    rect: DOMRectReadOnly;
+    measuredAt: number;
+}
+declare const RECT_CACHE_TTL_MS = 80;
+declare let rectCache: WeakMap<Element, CachedRect>;
+declare let rectCacheResetScheduled: boolean;
+declare function getElementRect(element: Element): DOMRectReadOnly;
+declare function scheduleRectCacheReset(): void;
 declare let currentConfig: StoredConfig | null;
 declare let observer: MutationObserver | null;
 declare let styleInjected: boolean;
@@ -102,6 +111,12 @@ declare const debounceTimers: WeakMap<Text, number>;
 declare let activeRequests: number;
 declare const highPriorityQueue: Text[];
 declare const lowPriorityQueue: Text[];
+interface TextBlurCacheEntry {
+    parent: Element | null;
+    target: Element | null;
+}
+declare const blurTargetCache: WeakMap<Element, Element | null>;
+declare const textBlurTargetCache: WeakMap<Text, TextBlurCacheEntry>;
 declare function getQueueLength(): number;
 declare function dequeueNode(): Text | undefined;
 declare function isNodeHighPriority(node: Text): boolean;
@@ -150,6 +165,7 @@ declare function evaluateNode(node: Text): Promise<void>;
 declare function applyBlur(element: Element | null, text: string, categories: MatchedCategoryInfo[]): void;
 declare function removeBlur(element: Element | null): void;
 declare function cleanupBlur(): void;
+declare function getBlurTargetForText(node: Text): Element | null;
 declare function findBlurTarget(element: Element | null): Element | null;
 declare function markPending(element: Element | null): void;
 declare function clearPending(element: Element | null): void;

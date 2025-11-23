@@ -405,6 +405,14 @@ let activeRequests = 0;
 const highPriorityQueue: Text[] = [];
 const lowPriorityQueue: Text[] = [];
 
+interface TextBlurCacheEntry {
+  parent: Element | null;
+  target: Element | null;
+}
+
+const blurTargetCache = new WeakMap<Element, Element | null>();
+const textBlurTargetCache = new WeakMap<Text, TextBlurCacheEntry>();
+
 function getQueueLength(): number {
   return highPriorityQueue.length + lowPriorityQueue.length;
 }
@@ -414,7 +422,7 @@ function dequeueNode(): Text | undefined {
 }
 
 function isNodeHighPriority(node: Text): boolean {
-  const target = findBlurTarget(node.parentElement);
+  const target = getBlurTargetForText(node);
   if (!target) {
     return false;
   }
@@ -755,7 +763,7 @@ function enqueueNode(node: Text) {
   ) {
     return;
   }
-  const targetElement = findBlurTarget(node.parentElement);
+  const targetElement = getBlurTargetForText(node);
   markPending(targetElement);
   // 디바운스: 같은 노드 텍스트가 짧은 시간에 여러 번 바뀔 때 1회만 처리
   const prevTimer = debounceTimers.get(node);
@@ -832,7 +840,7 @@ async function evaluateNode(node: Text) {
     !KOREAN_REGEX.test(content)
   ) {
     // 내용이 사라졌다면 이전에 적용했던 블러를 해제
-    removeBlur(findBlurTarget(node.parentElement));
+  removeBlur(getBlurTargetForText(node));
     return;
   }
 
@@ -844,7 +852,7 @@ async function evaluateNode(node: Text) {
       return;
     }
 
-    targetElement = findBlurTarget(node.parentElement);
+  targetElement = getBlurTargetForText(node);
     if (!targetElement) {
       return;
     }
@@ -868,7 +876,7 @@ async function evaluateNode(node: Text) {
     }
   } catch (error) {
     console.error("WebPurifier 필터 요청 실패", error);
-    clearPending(targetElement ?? findBlurTarget(node.parentElement));
+  clearPending(targetElement ?? getBlurTargetForText(node));
   }
 }
 
@@ -950,17 +958,42 @@ function cleanupBlur() {
   clearAllFeedback();
 }
 
+function getBlurTargetForText(node: Text): Element | null {
+  const parent = node.parentElement;
+  const cached = textBlurTargetCache.get(node);
+  if (cached && cached.parent === parent) {
+    return cached.target;
+  }
+  const target = findBlurTarget(parent);
+  textBlurTargetCache.set(node, { parent, target });
+  return target;
+}
+
 function findBlurTarget(element: Element | null): Element | null {
+  if (!element) {
+    return null;
+  }
+
+  const cached = blurTargetCache.get(element);
+  if (cached !== undefined) {
+    return cached;
+  }
+
   let current: Element | null = element;
   let depth = 0;
+  let resolved: Element | null = element;
+
   while (current && depth < 4) {
     if (current instanceof HTMLElement) {
-      return current;
+      resolved = current;
+      break;
     }
     current = current.parentElement;
     depth += 1;
   }
-  return element;
+
+  blurTargetCache.set(element, resolved);
+  return resolved;
 }
 
 function markPending(element: Element | null): void {
