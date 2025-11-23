@@ -77,12 +77,22 @@ def similarity(
             )
         set_cached_category_vectors(user_id, category_vectors, category_meta)
 
-    # --- 3. 벡터 연산으로 결과 생성 ---
-    results: List[FilterResult] = []
-    vector_iter = iter(vector_list)
+    # --- 3. 벡터 연산을 일괄 수행 ---
+    target_matrix = np.stack(vector_list)  # shape: (텍스트 수, 임베딩 차원)
+    score_matrix = _compute_batch_cosine_scores(category_vectors, target_matrix)
 
+    vector_index_map: List[int | None] = []
+    encode_idx = 0
     for text in texts:
-        if not text:
+        if text:
+            vector_index_map.append(encode_idx)
+            encode_idx += 1
+        else:
+            vector_index_map.append(None)
+
+    results: List[FilterResult] = []
+    for text, vector_idx in zip(texts, vector_index_map):
+        if vector_idx is None:
             results.append(
                 FilterResult(
                     text=text or "",
@@ -92,14 +102,7 @@ def similarity(
             )
             continue
 
-        try:
-            normalized_vector = next(vector_iter)
-        except StopIteration as exc:
-            raise RuntimeError(
-                "인코딩된 벡터 수가 요청 수와 일치하지 않습니다."
-            ) from exc
-
-        scores = _compute_cosine_scores(category_vectors, normalized_vector)
+        scores = score_matrix[vector_idx]
         matched = _build_matches(category_meta, scores, threshold)
 
         results.append(
@@ -109,14 +112,6 @@ def similarity(
                 matched_categories=matched,
             )
         )
-
-    # vector_list 개수 검증
-    try:
-        next(vector_iter)
-    except StopIteration:
-        pass
-    else:
-        raise RuntimeError("인코딩된 벡터 수가 요청 수보다 많습니다.")
 
     return FilterResponse(results=results)
 
@@ -186,18 +181,17 @@ def _load_user_category_vectors(
     return np.stack(vectors), kept_meta
 
 
-def _compute_cosine_scores(
-    category_matrix: np.ndarray, target: np.ndarray
+def _compute_batch_cosine_scores(
+    category_matrix: np.ndarray, targets: np.ndarray
 ) -> np.ndarray:
-    """정규화된 카테고리 행렬과 대상 벡터의 코사인 유사도 스코어를 계산한다."""
+    """여러 텍스트와 사용자 카테고리 벡터 간 코사인 유사도 행렬을 구한다."""
 
-    if target.ndim != 1:
-        target = target.ravel()
+    # category_matrix: (카테고리 수, dim)
+    # targets: (텍스트 수, dim)
+    if targets.ndim == 1:
+        targets = targets.reshape(1, -1)
 
-    if np.linalg.norm(target) == 0:
-        return np.zeros(category_matrix.shape[0], dtype=np.float32)
-
-    return category_matrix @ target
+    return targets @ category_matrix.T
 
 
 def _build_matches(
