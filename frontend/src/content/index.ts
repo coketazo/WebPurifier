@@ -412,6 +412,7 @@ interface TextBlurCacheEntry {
 
 const blurTargetCache = new WeakMap<Element, Element | null>();
 const textBlurTargetCache = new WeakMap<Text, TextBlurCacheEntry>();
+const textPendingTarget = new WeakMap<Text, Element | null>();
 
 function getQueueLength(): number {
   return highPriorityQueue.length + lowPriorityQueue.length;
@@ -764,6 +765,7 @@ function enqueueNode(node: Text) {
     return;
   }
   const targetElement = getBlurTargetForText(node);
+  textPendingTarget.set(node, targetElement);
   markPending(targetElement);
   // 디바운스: 같은 노드 텍스트가 짧은 시간에 여러 번 바뀔 때 1회만 처리
   const prevTimer = debounceTimers.get(node);
@@ -845,14 +847,16 @@ async function evaluateNode(node: Text) {
   }
 
   const truncated = content.slice(0, 1000);
-  let targetElement: Element | null = null;
+  let targetElement: Element | null = textPendingTarget.get(node) ?? null;
 
   try {
     if (!currentConfig) {
       return;
     }
 
-  targetElement = getBlurTargetForText(node);
+    if (!targetElement) {
+      targetElement = getBlurTargetForText(node);
+    }
     if (!targetElement) {
       return;
     }
@@ -867,7 +871,8 @@ async function evaluateNode(node: Text) {
     processedText.set(node, truncated);
 
     const result = await getFilterResult(truncated, currentConfig);
-    clearPending(targetElement);
+  clearPending(targetElement);
+  textPendingTarget.delete(node);
 
     if (result.should_filter) {
       applyBlur(targetElement, truncated, result.matched_categories);
@@ -876,7 +881,8 @@ async function evaluateNode(node: Text) {
     }
   } catch (error) {
     console.error("WebPurifier 필터 요청 실패", error);
-  clearPending(targetElement ?? getBlurTargetForText(node));
+    clearPending(targetElement ?? getBlurTargetForText(node));
+    textPendingTarget.delete(node);
   }
 }
 
@@ -1929,6 +1935,12 @@ function getSelectedCategoryId(context: FeedbackContext): number | null {
 }
 
 function cleanupRemovedNode(node: Node): void {
+  if (node instanceof Text) {
+    textBlurTargetCache.delete(node);
+    textPendingTarget.delete(node);
+    return;
+  }
+
   if (!(node instanceof Element)) {
     return;
   }

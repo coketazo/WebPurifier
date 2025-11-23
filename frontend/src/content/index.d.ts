@@ -117,6 +117,7 @@ interface TextBlurCacheEntry {
 }
 declare const blurTargetCache: WeakMap<Element, Element | null>;
 declare const textBlurTargetCache: WeakMap<Text, TextBlurCacheEntry>;
+declare const textPendingTarget: WeakMap<Text, Element | null>;
 declare function getQueueLength(): number;
 declare function dequeueNode(): Text | undefined;
 declare function isNodeHighPriority(node: Text): boolean;
