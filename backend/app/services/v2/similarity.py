@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from typing import List, Sequence, Tuple
 
 from app.services.v2.embedding import sbert_model  # 로드된 SBERT 모델
+from app.services.v2.embedding_cache import embedding_cache
 from app.services.v2.category_cache import (
     CategoryVectorMeta,
     get_cached_category_vectors,
@@ -50,12 +51,7 @@ def similarity(
         )
 
     # --- 1. 입력 텍스트 벡터화 ---
-    try:
-        raw_vectors = sbert_model.encode(texts_to_encode)
-    except Exception as exc:
-        raise RuntimeError(f"SBERT 인코딩 실패: {exc}") from exc
-
-    vector_list = _normalize_input_vectors(raw_vectors)
+    vector_list = _get_cached_embeddings(texts_to_encode)
 
     # --- 2. 사용자 카테고리 벡터 선로드 ---
     cached = get_cached_category_vectors(user_id)
@@ -116,30 +112,52 @@ def similarity(
     return FilterResponse(results=results)
 
 
-def _normalize_input_vectors(
-    raw_vectors: np.ndarray | List[np.ndarray],
-) -> List[np.ndarray]:
-    """SBERT 결과를 2차원 리스트로 변환하고 각 벡터를 정규화한다."""
+def _get_cached_embeddings(texts: List[str]) -> List[np.ndarray]:
+    """SBERT 임베딩을 캐시에서 조회하거나 필요한 부분만 새로 계산한다."""
 
-    def _to_array(vec: np.ndarray | List[float]) -> np.ndarray:
-        return np.asarray(vec, dtype=np.float32)
+    cached_entries: List[Tuple[int, np.ndarray]] = []
+    missing_indices: List[int] = []
+    missing_texts: List[str] = []
 
-    vectors: List[np.ndarray]
-    if isinstance(raw_vectors, np.ndarray):
-        if raw_vectors.ndim == 1:
-            vectors = [raw_vectors]
+    for idx, text in enumerate(texts):
+        cached = embedding_cache.get(text)
+        if cached is not None:
+            cached_entries.append((idx, cached))
         else:
-            vectors = [row for row in raw_vectors]
-    else:
-        vectors = [_to_array(vec) for vec in raw_vectors]  # type: ignore[arg-type]
+            missing_indices.append(idx)
+            missing_texts.append(text)
+
+    vectors: List[np.ndarray | None] = [None] * len(texts)
+    for idx, vec in cached_entries:
+        vectors[idx] = vec
+
+    if missing_texts:
+        try:
+            encoded = sbert_model.encode(missing_texts)
+        except Exception as exc:
+            raise RuntimeError(f"SBERT 인코딩 실패: {exc}") from exc
+
+        encoded_list: List[np.ndarray]
+        if isinstance(encoded, np.ndarray):
+            if encoded.ndim == 1:
+                encoded_list = [encoded]
+            else:
+                encoded_list = [row for row in encoded]
+        else:
+            encoded_list = [np.asarray(vec) for vec in encoded]  # type: ignore[arg-type]
+
+        for position, vec in zip(missing_indices, encoded_list):
+            arr = np.asarray(vec, dtype=np.float32)
+            vectors[position] = arr
+            embedding_cache.set(texts[position], arr)
 
     normalized: List[np.ndarray] = []
     for vec in vectors:
+        if vec is None:
+            raise RuntimeError("임베딩 캐시 구성 중 누락된 벡터가 발생했습니다.")
         norm = np.linalg.norm(vec)
-        if norm == 0:
-            normalized.append(vec)
-        else:
-            normalized.append(vec / norm)
+        normalized.append(vec if norm == 0 else vec / norm)
+
     return normalized
 
 
