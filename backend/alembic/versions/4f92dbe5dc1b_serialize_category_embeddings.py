@@ -5,6 +5,7 @@ Revises: 1c1e5e5a0d8b
 Create Date: 2025-11-24 00:00:00.000000
 
 """
+
 from typing import Sequence, Union
 import ast
 import json
@@ -84,9 +85,7 @@ def upgrade() -> None:
         if blob is None:
             continue
         conn.execute(
-            sa.text(
-                "UPDATE categories SET embedding_bytes = :blob WHERE id = :id"
-            ),
+            sa.text("UPDATE categories SET embedding_bytes = :blob WHERE id = :id"),
             {"blob": blob, "id": row.id},
         )
 
@@ -117,15 +116,11 @@ def downgrade() -> None:
         if arr.size != EMBEDDING_DIM:
             continue
         conn.execute(
-            sa.text(
-                "UPDATE categories SET embedding_vector = :vec WHERE id = :id"
-            ),
+            sa.text("UPDATE categories SET embedding_vector = :vec WHERE id = :id"),
             {"vec": arr.tolist(), "id": row.id},
         )
 
     if _has_column(conn, "categories", "embedding"):
         op.drop_column("categories", "embedding")
     if _has_column(conn, "categories", "embedding_vector"):
-        op.alter_column(
-            "categories", "embedding_vector", new_column_name="embedding"
-        )
+        op.alter_column("categories", "embedding_vector", new_column_name="embedding")
