@@ -3,12 +3,18 @@ from sqlalchemy.orm import Session
 from typing import List, Sequence, Tuple
 
 from app.services.v2.embedding import sbert_model  # 로드된 SBERT 모델
+from app.services.v2.category_cache import (
+    CategoryVectorMeta,
+    get_cached_category_vectors,
+    set_cached_category_vectors,
+)
 from app.v2.models import Category  # SQLAlchemy Category 모델
 from app.schemas.v2.filter import (
     FilterResponse,
     FilterResult,
     MatchedCategoryInfo,
 )
+
 
 def similarity(
     db: Session,
@@ -52,19 +58,24 @@ def similarity(
     vector_list = _normalize_input_vectors(raw_vectors)
 
     # --- 2. 사용자 카테고리 벡터 선로드 ---
-    category_vectors, category_meta = _load_user_category_vectors(db, user_id)
-    if category_vectors is None or category_meta is None:
-        # 카테고리가 없으면 모두 통과
-        return FilterResponse(
-            results=[
-                FilterResult(
-                    text=text,
-                    should_filter=False,
-                    matched_categories=[],
-                )
-                for text in texts
-            ]
-        )
+    cached = get_cached_category_vectors(user_id)
+    if cached is not None:
+        category_vectors, category_meta = cached
+    else:
+        category_vectors, category_meta = _load_user_category_vectors(db, user_id)
+        if category_vectors is None or category_meta is None:
+            # 카테고리가 없으면 모두 통과
+            return FilterResponse(
+                results=[
+                    FilterResult(
+                        text=text,
+                        should_filter=False,
+                        matched_categories=[],
+                    )
+                    for text in texts
+                ]
+            )
+        set_cached_category_vectors(user_id, category_vectors, category_meta)
 
     # --- 3. 벡터 연산으로 결과 생성 ---
     results: List[FilterResult] = []
@@ -84,7 +95,9 @@ def similarity(
         try:
             normalized_vector = next(vector_iter)
         except StopIteration as exc:
-            raise RuntimeError("인코딩된 벡터 수가 요청 수와 일치하지 않습니다.") from exc
+            raise RuntimeError(
+                "인코딩된 벡터 수가 요청 수와 일치하지 않습니다."
+            ) from exc
 
         scores = _compute_cosine_scores(category_vectors, normalized_vector)
         matched = _build_matches(category_meta, scores, threshold)
@@ -108,7 +121,9 @@ def similarity(
     return FilterResponse(results=results)
 
 
-def _normalize_input_vectors(raw_vectors: np.ndarray | List[np.ndarray]) -> List[np.ndarray]:
+def _normalize_input_vectors(
+    raw_vectors: np.ndarray | List[np.ndarray],
+) -> List[np.ndarray]:
     """SBERT 결과를 2차원 리스트로 변환하고 각 벡터를 정규화한다."""
 
     def _to_array(vec: np.ndarray | List[float]) -> np.ndarray:
@@ -121,10 +136,7 @@ def _normalize_input_vectors(raw_vectors: np.ndarray | List[np.ndarray]) -> List
         else:
             vectors = [row for row in raw_vectors]
     else:
-        vectors = [
-            _to_array(vec)
-            for vec in raw_vectors  # type: ignore[arg-type]
-        ]
+        vectors = [_to_array(vec) for vec in raw_vectors]  # type: ignore[arg-type]
 
     normalized: List[np.ndarray] = []
     for vec in vectors:
@@ -138,7 +150,7 @@ def _normalize_input_vectors(raw_vectors: np.ndarray | List[np.ndarray]) -> List
 
 def _load_user_category_vectors(
     db: Session, user_id: int
-) -> Tuple[np.ndarray | None, List[Category] | None]:
+) -> Tuple[np.ndarray | None, List[CategoryVectorMeta] | None]:
     """사용자 카테고리를 한 번에 불러와 정규화된 행렬로 반환한다."""
 
     categories: List[Category] = (
@@ -151,7 +163,7 @@ def _load_user_category_vectors(
         return None, None
 
     vectors: List[np.ndarray] = []
-    kept_meta: List[Category] = []
+    kept_meta: List[CategoryVectorMeta] = []
 
     for category in categories:
         if category.embedding is None:
@@ -161,7 +173,12 @@ def _load_user_category_vectors(
         if norm == 0:
             continue
         vectors.append(vec / norm)
-        kept_meta.append(category)
+        kept_meta.append(
+            CategoryVectorMeta(
+                id=category.id,
+                name=category.name,
+            )
+        )
 
     if not vectors:
         return None, None
@@ -169,7 +186,9 @@ def _load_user_category_vectors(
     return np.stack(vectors), kept_meta
 
 
-def _compute_cosine_scores(category_matrix: np.ndarray, target: np.ndarray) -> np.ndarray:
+def _compute_cosine_scores(
+    category_matrix: np.ndarray, target: np.ndarray
+) -> np.ndarray:
     """정규화된 카테고리 행렬과 대상 벡터의 코사인 유사도 스코어를 계산한다."""
 
     if target.ndim != 1:
@@ -182,7 +201,7 @@ def _compute_cosine_scores(category_matrix: np.ndarray, target: np.ndarray) -> n
 
 
 def _build_matches(
-    categories: List[Category],
+    categories: List[CategoryVectorMeta],
     scores: np.ndarray,
     threshold: float,
 ) -> List[MatchedCategoryInfo]:

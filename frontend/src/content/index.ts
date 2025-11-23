@@ -358,6 +358,40 @@ const DEBOUNCE_MS = 150; // 동일 노드 텍스트 변동 디바운스 시간
 const MAX_CONCURRENT_REQUESTS = 6; // 동시에 진행할 최대 요청 수
 const VIEWPORT_MARGIN = 200; // 뷰포트 경계 여유값(px)
 
+interface CachedRect {
+  rect: DOMRectReadOnly;
+  measuredAt: number;
+}
+
+const RECT_CACHE_TTL_MS = 80;
+let rectCache: WeakMap<Element, CachedRect> = new WeakMap();
+let rectCacheResetScheduled = false;
+
+function getElementRect(element: Element): DOMRectReadOnly {
+  const now = performance.now();
+  const cached = rectCache.get(element);
+  if (cached && now - cached.measuredAt < RECT_CACHE_TTL_MS) {
+    return cached.rect;
+  }
+  const rect = element.getBoundingClientRect();
+  rectCache.set(element, { rect, measuredAt: now });
+  return rect;
+}
+
+function scheduleRectCacheReset(): void {
+  if (rectCacheResetScheduled) {
+    return;
+  }
+  rectCacheResetScheduled = true;
+  window.requestAnimationFrame(() => {
+    rectCache = new WeakMap();
+    rectCacheResetScheduled = false;
+  });
+}
+
+window.addEventListener("scroll", scheduleRectCacheReset, true);
+window.addEventListener("resize", scheduleRectCacheReset);
+
 let currentConfig: StoredConfig | null = null;
 let observer: MutationObserver | null = null;
 let styleInjected = false;
@@ -385,7 +419,7 @@ function isNodeHighPriority(node: Text): boolean {
     return false;
   }
 
-  const rect = target.getBoundingClientRect();
+  const rect = getElementRect(target);
   const extendedTop = -VIEWPORT_MARGIN;
   const extendedBottom = window.innerHeight + VIEWPORT_MARGIN;
 

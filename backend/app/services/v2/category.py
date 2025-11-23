@@ -1,17 +1,24 @@
 import numpy as np
 from sqlalchemy.orm import Session
 
-from app.services.v1.llm import generate_text # Gemini 호출 함수
-from app.services.v2.embedding import sbert_model # SBERT 모델 객체
-from app.v2.models import Category # SQLAlchemy 모델
-from app.schemas.v2.category import CategoryResponse # 반환 타입용 스키마
+from app.services.v1.llm import generate_text  # Gemini 호출 함수
+from app.services.v2.embedding import sbert_model  # SBERT 모델 객체
+from app.services.v2.category_cache import invalidate_category_cache
+from app.v2.models import Category  # SQLAlchemy 모델
+from app.schemas.v2.category import CategoryResponse  # 반환 타입용 스키마
+
 
 # LLM이 예시 문장 생성 실패 시 사용할 에러
 class ExampleGenerationError(Exception):
     pass
 
+
 def create_category(
-    db: Session, user_id: int, name: str, keywords: list[str], description: str | None = None
+    db: Session,
+    user_id: int,
+    name: str,
+    keywords: list[str],
+    description: str | None = None,
 ) -> Category:
     """사용자 키워드 기반으로 LLM을 이용해 대표 벡터를 생성하고 DB에 저장"""
 
@@ -26,14 +33,20 @@ def create_category(
     """
     try:
         # LLM 호출 시 응답 스키마를 지정하지 않으므로 일반 텍스트로 받음
-        selected_sentences_text = generate_text(content="", prompt=prompt_for_examples_and_selection)
-        final_sentences = selected_sentences_text.strip().split('\n')
+        selected_sentences_text = generate_text(
+            content="", prompt=prompt_for_examples_and_selection
+        )
+        final_sentences = selected_sentences_text.strip().split("\n")
         print("LLM이 생성/선별한 예시 문장들:", final_sentences)
-        
+
         # 생성된 문장이 비어있거나 유효하지 않은 경우 에러 발생
-        if not final_sentences or not final_sentences[0] or len(final_sentences) < 3: # 최소 3개 이상은 생성되어야 함
-             raise ExampleGenerationError("LLM이 유효한 예시 문장을 충분히 생성하지 못했습니다.")
-        
+        if (
+            not final_sentences or not final_sentences[0] or len(final_sentences) < 3
+        ):  # 최소 3개 이상은 생성되어야 함
+            raise ExampleGenerationError(
+                "LLM이 유효한 예시 문장을 충분히 생성하지 못했습니다."
+            )
+
         # 빈 줄 제거
         final_sentences = [s for s in final_sentences if s.strip()]
 
@@ -41,7 +54,6 @@ def create_category(
         # LLM 호출 관련 에러 처리
         print(f"LLM 호출 중 에러 발생: {e}")
         raise ExampleGenerationError(f"LLM 예시 생성 실패: {e}") from e
-
 
     # --- 3단계: 대표 벡터 생성 ---
     try:
@@ -58,17 +70,18 @@ def create_category(
             user_id=user_id,
             name=name,
             description=description,
-            embedding=representative_vector.tolist() # NumPy 배열을 리스트로 변환
+            embedding=representative_vector.tolist(),  # NumPy 배열을 리스트로 변환
         )
         db.add(new_category)
         db.commit()
         db.refresh(new_category)
-        
+        invalidate_category_cache(user_id)
+
         print(f"'{name}' 카테고리 생성 완료. ID: {new_category.id}")
         return new_category
     except Exception as e:
         # DB 저장 에러 처리
-        db.rollback() # 오류 발생 시 롤백
+        db.rollback()  # 오류 발생 시 롤백
         print(f"DB 저장 중 에러 발생: {e}")
         raise RuntimeError(f"카테고리 DB 저장 실패: {e}") from e
 
