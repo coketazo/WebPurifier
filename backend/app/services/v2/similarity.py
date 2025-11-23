@@ -9,6 +9,7 @@ from app.services.v2.category_cache import (
     get_cached_category_vectors,
     set_cached_category_vectors,
 )
+from app.services.v2.vector import deserialize_vector
 from app.v2.models import Category  # SQLAlchemy Category 모델
 from app.schemas.v2.filter import (
     FilterResponse,
@@ -181,11 +182,11 @@ def _load_user_category_vectors(
     for category in categories:
         if category.embedding is None:
             continue
-        vec = np.asarray(category.embedding, dtype=np.float32)
-        norm = np.linalg.norm(vec)
-        if norm == 0:
+        try:
+            vec = deserialize_vector(category.embedding)
+        except ValueError:
             continue
-        vectors.append(vec / norm)
+        vectors.append(vec)
         kept_meta.append(
             CategoryVectorMeta(
                 id=category.id,

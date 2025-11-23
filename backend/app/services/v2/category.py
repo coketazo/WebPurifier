@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 
 from app.services.v1.llm import generate_text  # Gemini 호출 함수
 from app.services.v2.embedding import sbert_model  # SBERT 모델 객체
+from app.services.v2.vector import serialize_normalized_vector
 from app.services.v2.category_cache import invalidate_category_cache
 from app.v2.models import Category  # SQLAlchemy 모델
 from app.schemas.v2.category import CategoryResponse  # 반환 타입용 스키마
@@ -59,6 +60,7 @@ def create_category(
     try:
         embeddings = sbert_model.encode(final_sentences)
         representative_vector = np.mean(embeddings, axis=0)
+        serialized_embedding = serialize_normalized_vector(representative_vector)
     except Exception as e:
         # SBERT 인코딩 에러 처리
         print(f"SBERT 인코딩 중 에러 발생: {e}")
@@ -70,7 +72,7 @@ def create_category(
             user_id=user_id,
             name=name,
             description=description,
-            embedding=representative_vector.tolist(),  # NumPy 배열을 리스트로 변환
+            embedding=serialized_embedding,
         )
         db.add(new_category)
         db.commit()
