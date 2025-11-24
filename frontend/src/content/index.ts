@@ -413,6 +413,139 @@ interface TextBlurCacheEntry {
 const blurTargetCache = new WeakMap<Element, Element | null>();
 const textBlurTargetCache = new WeakMap<Text, TextBlurCacheEntry>();
 const textPendingTarget = new WeakMap<Text, Element | null>();
+const targetNodeMap = new WeakMap<Element, Set<Text>>();
+const HAS_INTERSECTION_OBSERVER =
+  typeof window !== "undefined" && "IntersectionObserver" in window;
+let blurTargetObserver: IntersectionObserver | null = null;
+const observedBlurTargets = new WeakSet<Element>();
+const visibleBlurTargets = new WeakSet<Element>();
+const visibilityKnownTargets = new WeakSet<Element>();
+
+function ensureBlurTargetObserver(): IntersectionObserver | null {
+  if (!HAS_INTERSECTION_OBSERVER) {
+    return null;
+  }
+  if (blurTargetObserver) {
+    return blurTargetObserver;
+  }
+  blurTargetObserver = new IntersectionObserver(
+    (entries) => {
+      entries.forEach((entry) => {
+        const element = entry.target as Element;
+        if (entry.isIntersecting) {
+          visibleBlurTargets.add(element);
+          promoteNodesForTarget(element);
+        } else {
+          visibleBlurTargets.delete(element);
+        }
+        visibilityKnownTargets.add(element);
+      });
+    },
+    {
+      root: null,
+      rootMargin: `${VIEWPORT_MARGIN}px 0px ${VIEWPORT_MARGIN}px 0px`,
+      threshold: 0,
+    }
+  );
+  return blurTargetObserver;
+}
+
+function observeBlurTarget(element: Element | null): void {
+  if (!element) {
+    return;
+  }
+  const observer = ensureBlurTargetObserver();
+  if (!observer || observedBlurTargets.has(element)) {
+    return;
+  }
+  observer.observe(element);
+  observedBlurTargets.add(element);
+}
+
+function unobserveBlurTarget(element: Element | null): void {
+  if (!element || !blurTargetObserver || !observedBlurTargets.has(element)) {
+    return;
+  }
+  blurTargetObserver.unobserve(element);
+  observedBlurTargets.delete(element);
+  visibleBlurTargets.delete(element);
+  visibilityKnownTargets.delete(element);
+}
+
+function registerNodeForTarget(node: Text, target: Element | null): void {
+  if (!target) {
+    return;
+  }
+  let nodes = targetNodeMap.get(target);
+  if (!nodes) {
+    nodes = new Set();
+    targetNodeMap.set(target, nodes);
+  }
+  nodes.add(node);
+}
+
+function unregisterNodeForTarget(node: Text, target: Element | null): void {
+  if (!target) {
+    return;
+  }
+  const nodes = targetNodeMap.get(target);
+  if (!nodes) {
+    return;
+  }
+  nodes.delete(node);
+  if (nodes.size === 0) {
+    targetNodeMap.delete(target);
+  }
+}
+
+function promoteNodesForTarget(target: Element): void {
+  const nodes = targetNodeMap.get(target);
+  if (!nodes || nodes.size === 0) {
+    return;
+  }
+  if (lowPriorityQueue.length === 0) {
+    return;
+  }
+  const promoteSet = new Set(nodes);
+  if (promoteSet.size === 0) {
+    return;
+  }
+  const remainingLow: Text[] = [];
+  let promoted = false;
+  for (const node of lowPriorityQueue) {
+    if (promoteSet.has(node)) {
+      highPriorityQueue.push(node);
+      promoted = true;
+    } else {
+      remainingLow.push(node);
+    }
+  }
+  if (promoted) {
+    lowPriorityQueue.length = 0;
+    remainingLow.forEach((node) => lowPriorityQueue.push(node));
+    processQueue();
+  }
+}
+
+function isTargetWithinViewport(target: Element): boolean {
+  const rect = getElementRect(target);
+  const extendedTop = -VIEWPORT_MARGIN;
+  const extendedBottom = window.innerHeight + VIEWPORT_MARGIN;
+  return rect.bottom >= extendedTop && rect.top <= extendedBottom;
+}
+
+function isTargetVisible(target: Element): boolean {
+  if (!HAS_INTERSECTION_OBSERVER) {
+    return isTargetWithinViewport(target);
+  }
+  if (visibleBlurTargets.has(target)) {
+    return true;
+  }
+  if (!visibilityKnownTargets.has(target)) {
+    return isTargetWithinViewport(target);
+  }
+  return false;
+}
 
 function getQueueLength(): number {
   return highPriorityQueue.length + lowPriorityQueue.length;
@@ -427,12 +560,7 @@ function isNodeHighPriority(node: Text): boolean {
   if (!target) {
     return false;
   }
-
-  const rect = getElementRect(target);
-  const extendedTop = -VIEWPORT_MARGIN;
-  const extendedBottom = window.innerHeight + VIEWPORT_MARGIN;
-
-  return rect.bottom >= extendedTop && rect.top <= extendedBottom;
+  return isTargetVisible(target);
 }
 interface FeedbackContext {
   element: Element;
@@ -766,6 +894,7 @@ function enqueueNode(node: Text) {
   }
   const targetElement = getBlurTargetForText(node);
   textPendingTarget.set(node, targetElement);
+  registerNodeForTarget(node, targetElement);
   markPending(targetElement);
   // 디바운스: 같은 노드 텍스트가 짧은 시간에 여러 번 바뀔 때 1회만 처리
   const prevTimer = debounceTimers.get(node);
@@ -785,6 +914,11 @@ function queueNode(node: Text): void {
     return;
   }
   flagged.__webpurifierQueued = true;
+  const target = textPendingTarget.get(node) ?? getBlurTargetForText(node);
+  if (!textPendingTarget.has(node) && target) {
+    textPendingTarget.set(node, target);
+    registerNodeForTarget(node, target);
+  }
   if (isNodeHighPriority(node)) {
     highPriorityQueue.push(node);
   } else {
@@ -836,13 +970,12 @@ function processQueue() {
 
 async function evaluateNode(node: Text) {
   const content = node.textContent?.trim();
-  if (
-    !content ||
-    content.length < MIN_TEXT_LENGTH ||
-    !KOREAN_REGEX.test(content)
-  ) {
-    // 내용이 사라졌다면 이전에 적용했던 블러를 해제
-  removeBlur(getBlurTargetForText(node));
+  const noFilterNeeded =
+    !content || content.length < MIN_TEXT_LENGTH || !KOREAN_REGEX.test(content);
+  if (noFilterNeeded) {
+    const targetRef = textPendingTarget.get(node) ?? getBlurTargetForText(node);
+    unregisterNodeForTarget(node, targetRef);
+    removeBlur(targetRef);
     return;
   }
 
@@ -856,6 +989,9 @@ async function evaluateNode(node: Text) {
 
     if (!targetElement) {
       targetElement = getBlurTargetForText(node);
+      if (targetElement) {
+        textPendingTarget.set(node, targetElement);
+      }
     }
     if (!targetElement) {
       return;
@@ -871,8 +1007,9 @@ async function evaluateNode(node: Text) {
     processedText.set(node, truncated);
 
     const result = await getFilterResult(truncated, currentConfig);
-  clearPending(targetElement);
-  textPendingTarget.delete(node);
+    clearPending(targetElement);
+    unregisterNodeForTarget(node, targetElement);
+    textPendingTarget.delete(node);
 
     if (result.should_filter) {
       applyBlur(targetElement, truncated, result.matched_categories);
@@ -881,7 +1018,9 @@ async function evaluateNode(node: Text) {
     }
   } catch (error) {
     console.error("WebPurifier 필터 요청 실패", error);
-    clearPending(targetElement ?? getBlurTargetForText(node));
+    const fallbackTarget = targetElement ?? getBlurTargetForText(node);
+    clearPending(fallbackTarget);
+    unregisterNodeForTarget(node, fallbackTarget);
     textPendingTarget.delete(node);
   }
 }
@@ -971,6 +1110,9 @@ function getBlurTargetForText(node: Text): Element | null {
     return cached.target;
   }
   const target = findBlurTarget(parent);
+  if (target) {
+    observeBlurTarget(target);
+  }
   textBlurTargetCache.set(node, { parent, target });
   return target;
 }
@@ -1714,6 +1856,9 @@ function handleBlurredElementClick(element: Element, event: MouseEvent): void {
   if (!context || !currentConfig?.token) {
     return;
   }
+  if (element.getAttribute("data-webpurifier-revealed") === "true") {
+    return;
+  }
   event.preventDefault();
   event.stopPropagation();
   activateWeakenFeedback(context);
@@ -1937,6 +2082,8 @@ function getSelectedCategoryId(context: FeedbackContext): number | null {
 function cleanupRemovedNode(node: Node): void {
   if (node instanceof Text) {
     textBlurTargetCache.delete(node);
+    const target = textPendingTarget.get(node) ?? null;
+    unregisterNodeForTarget(node, target);
     textPendingTarget.delete(node);
     return;
   }
@@ -1944,6 +2091,8 @@ function cleanupRemovedNode(node: Node): void {
   if (!(node instanceof Element)) {
     return;
   }
+
+  unobserveBlurTarget(node);
 
   if (node.hasAttribute("data-webpurifier-pending")) {
     clearPending(node);
@@ -1957,11 +2106,13 @@ function cleanupRemovedNode(node: Node): void {
     .querySelectorAll("[data-webpurifier-pending='true']")
     .forEach((child) => {
       clearPending(child as Element);
+      unobserveBlurTarget(child as Element);
     });
 
   node
     .querySelectorAll("[data-webpurifier-blurred='true']")
     .forEach((child) => {
       removeBlur(child as Element);
+      unobserveBlurTarget(child as Element);
     });
 }

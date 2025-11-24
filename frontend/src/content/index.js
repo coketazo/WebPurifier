@@ -282,6 +282,129 @@ const lowPriorityQueue = [];
 const blurTargetCache = new WeakMap();
 const textBlurTargetCache = new WeakMap();
 const textPendingTarget = new WeakMap();
+const targetNodeMap = new WeakMap();
+const HAS_INTERSECTION_OBSERVER = typeof window !== "undefined" && "IntersectionObserver" in window;
+let blurTargetObserver = null;
+const observedBlurTargets = new WeakSet();
+const visibleBlurTargets = new WeakSet();
+const visibilityKnownTargets = new WeakSet();
+function ensureBlurTargetObserver() {
+    if (!HAS_INTERSECTION_OBSERVER) {
+        return null;
+    }
+    if (blurTargetObserver) {
+        return blurTargetObserver;
+    }
+    blurTargetObserver = new IntersectionObserver((entries) => {
+        entries.forEach((entry) => {
+            const element = entry.target;
+            if (entry.isIntersecting) {
+                visibleBlurTargets.add(element);
+                promoteNodesForTarget(element);
+            }
+            else {
+                visibleBlurTargets.delete(element);
+            }
+            visibilityKnownTargets.add(element);
+        });
+    }, {
+        root: null,
+        rootMargin: `${VIEWPORT_MARGIN}px 0px ${VIEWPORT_MARGIN}px 0px`,
+        threshold: 0,
+    });
+    return blurTargetObserver;
+}
+function observeBlurTarget(element) {
+    if (!element) {
+        return;
+    }
+    const observer = ensureBlurTargetObserver();
+    if (!observer || observedBlurTargets.has(element)) {
+        return;
+    }
+    observer.observe(element);
+    observedBlurTargets.add(element);
+}
+function unobserveBlurTarget(element) {
+    if (!element || !blurTargetObserver || !observedBlurTargets.has(element)) {
+        return;
+    }
+    blurTargetObserver.unobserve(element);
+    observedBlurTargets.delete(element);
+    visibleBlurTargets.delete(element);
+    visibilityKnownTargets.delete(element);
+}
+function registerNodeForTarget(node, target) {
+    if (!target) {
+        return;
+    }
+    let nodes = targetNodeMap.get(target);
+    if (!nodes) {
+        nodes = new Set();
+        targetNodeMap.set(target, nodes);
+    }
+    nodes.add(node);
+}
+function unregisterNodeForTarget(node, target) {
+    if (!target) {
+        return;
+    }
+    const nodes = targetNodeMap.get(target);
+    if (!nodes) {
+        return;
+    }
+    nodes.delete(node);
+    if (nodes.size === 0) {
+        targetNodeMap.delete(target);
+    }
+}
+function promoteNodesForTarget(target) {
+    const nodes = targetNodeMap.get(target);
+    if (!nodes || nodes.size === 0) {
+        return;
+    }
+    if (lowPriorityQueue.length === 0) {
+        return;
+    }
+    const promoteSet = new Set(nodes);
+    if (promoteSet.size === 0) {
+        return;
+    }
+    const remainingLow = [];
+    let promoted = false;
+    for (const node of lowPriorityQueue) {
+        if (promoteSet.has(node)) {
+            highPriorityQueue.push(node);
+            promoted = true;
+        }
+        else {
+            remainingLow.push(node);
+        }
+    }
+    if (promoted) {
+        lowPriorityQueue.length = 0;
+        remainingLow.forEach((node) => lowPriorityQueue.push(node));
+        processQueue();
+    }
+}
+function isTargetWithinViewport(target) {
+    const rect = getElementRect(target);
+    const extendedTop = -VIEWPORT_MARGIN;
+    const extendedBottom = window.innerHeight + VIEWPORT_MARGIN;
+    return rect.bottom >= extendedTop && rect.top <= extendedBottom;
+}
+function isTargetVisible(target) {
+    if (!HAS_INTERSECTION_OBSERVER) {
+        return isTargetWithinViewport(target);
+    }
+    if (visibleBlurTargets.has(target)) {
+        return true;
+    }
+    if (!visibilityKnownTargets.has(target)) {
+        return isTargetWithinViewport(target);
+    }
+    return false;
+}
 function getQueueLength() {
     return highPriorityQueue.length + lowPriorityQueue.length;
 }
@@ -293,10 +416,7 @@ function isNodeHighPriority(node) {
     if (!target) {
         return false;
     }
-    const rect = getElementRect(target);
-    const extendedTop = -VIEWPORT_MARGIN;
-    const extendedBottom = window.innerHeight + VIEWPORT_MARGIN;
-    return rect.bottom >= extendedTop && rect.top <= extendedBottom;
+    return isTargetVisible(target);
 }
 const feedbackContextMap = new WeakMap();
 const feedbackContextSet = new Set();
@@ -593,6 +713,7 @@ function enqueueNode(node) {
     }
     const targetElement = getBlurTargetForText(node);
     textPendingTarget.set(node, targetElement);
+    registerNodeForTarget(node, targetElement);
     markPending(targetElement);
     // 디바운스: 같은 노드 텍스트가 짧은 시간에 여러 번 바뀔 때 1회만 처리
     const prevTimer = debounceTimers.get(node);
@@ -611,6 +732,11 @@ function queueNode(node) {
         return;
     }
     flagged.__webpurifierQueued = true;
+    const target = textPendingTarget.get(node) ?? getBlurTargetForText(node);
+    if (!textPendingTarget.has(node) && target) {
+        textPendingTarget.set(node, target);
+        registerNodeForTarget(node, target);
+    }
     if (isNodeHighPriority(node)) {
         highPriorityQueue.push(node);
     }
@@ -657,11 +783,11 @@ function processQueue() {
 }
 async function evaluateNode(node) {
     const content = node.textContent?.trim();
-    if (!content ||
-        content.length < MIN_TEXT_LENGTH ||
-        !KOREAN_REGEX.test(content)) {
-        // 내용이 사라졌다면 이전에 적용했던 블러를 해제
-        removeBlur(getBlurTargetForText(node));
+    const noFilterNeeded = !content || content.length < MIN_TEXT_LENGTH || !KOREAN_REGEX.test(content);
+    if (noFilterNeeded) {
+        const targetRef = textPendingTarget.get(node) ?? getBlurTargetForText(node);
+        unregisterNodeForTarget(node, targetRef);
+        removeBlur(targetRef);
         return;
     }
     const truncated = content.slice(0, 1000);
@@ -672,6 +798,9 @@ async function evaluateNode(node) {
         }
         if (!targetElement) {
             targetElement = getBlurTargetForText(node);
+            if (targetElement) {
+                textPendingTarget.set(node, targetElement);
+            }
         }
         if (!targetElement) {
             return;
@@ -685,6 +814,7 @@ async function evaluateNode(node) {
         processedText.set(node, truncated);
         const result = await getFilterResult(truncated, currentConfig);
         clearPending(targetElement);
+        unregisterNodeForTarget(node, targetElement);
         textPendingTarget.delete(node);
         if (result.should_filter) {
             applyBlur(targetElement, truncated, result.matched_categories);
@@ -695,7 +825,9 @@ async function evaluateNode(node) {
     }
     catch (error) {
         console.error("WebPurifier 필터 요청 실패", error);
-        clearPending(targetElement ?? getBlurTargetForText(node));
+        const fallbackTarget = targetElement ?? getBlurTargetForText(node);
+        clearPending(fallbackTarget);
+        unregisterNodeForTarget(node, fallbackTarget);
         textPendingTarget.delete(node);
     }
 }
@@ -774,6 +906,9 @@ function getBlurTargetForText(node) {
         return cached.target;
     }
     const target = findBlurTarget(parent);
+    if (target) {
+        observeBlurTarget(target);
+    }
     textBlurTargetCache.set(node, { parent, target });
     return target;
 }
@@ -1408,6 +1543,9 @@ function handleBlurredElementClick(element, event) {
     if (!context || !currentConfig?.token) {
         return;
     }
+    if (element.getAttribute("data-webpurifier-revealed") === "true") {
+        return;
+    }
     event.preventDefault();
     event.stopPropagation();
     activateWeakenFeedback(context);
@@ -1607,12 +1745,15 @@ function getSelectedCategoryId(context) {
 function cleanupRemovedNode(node) {
     if (node instanceof Text) {
         textBlurTargetCache.delete(node);
+        const target = textPendingTarget.get(node) ?? null;
+        unregisterNodeForTarget(node, target);
         textPendingTarget.delete(node);
         return;
     }
     if (!(node instanceof Element)) {
         return;
     }
+    unobserveBlurTarget(node);
     if (node.hasAttribute("data-webpurifier-pending")) {
         clearPending(node);
     }
@@ -1623,10 +1764,12 @@ function cleanupRemovedNode(node) {
         .querySelectorAll("[data-webpurifier-pending='true']")
         .forEach((child) => {
         clearPending(child);
+        unobserveBlurTarget(child);
     });
     node
         .querySelectorAll("[data-webpurifier-blurred='true']")
         .forEach((child) => {
         removeBlur(child);
+        unobserveBlurTarget(child);
     });
 }
