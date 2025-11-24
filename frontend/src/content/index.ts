@@ -51,6 +51,11 @@ type RuntimeMessage =
   | { type: "CONFIG_UPDATED"; payload: StoredConfig }
   | { type: "REQUEST_CONTENT_REFRESH" };
 
+type IdleDeadlineLike = {
+  didTimeout: boolean;
+  timeRemaining(): number;
+};
+
 const STORAGE_KEY = "webpurifier_config";
 const DEFAULT_API_BASE_URL = "http://localhost:8000";
 
@@ -161,8 +166,41 @@ function getErrorMessage(error: unknown): string {
   return String(error);
 }
 
+function getCachedFilterResult(key: string): FilterResult | null {
+  const entry = filterCache.get(key);
+  if (!entry) {
+    return null;
+  }
+  if (performance.now() - entry.storedAt > FILTER_CACHE_TTL_MS) {
+    filterCache.delete(key);
+    return null;
+  }
+  // LRU: refresh order
+  filterCache.delete(key);
+  filterCache.set(key, entry);
+  return entry.result;
+}
+
+function setCachedFilterResult(key: string, value: FilterResult): void {
+  filterCache.delete(key);
+  filterCache.set(key, { result: value, storedAt: performance.now() });
+  if (filterCache.size <= FILTER_CACHE_MAX_ENTRIES) {
+    return;
+  }
+  const oldestKey = filterCache.keys().next().value as string | undefined;
+  if (oldestKey) {
+    filterCache.delete(oldestKey);
+  }
+}
+
 // 동일한 텍스트에 대한 요청을 캐시하여 서버 부하를 줄인다
-const filterCache = new Map<string, FilterResult>();
+const FILTER_CACHE_TTL_MS = 10 * 60 * 1000;
+const FILTER_CACHE_MAX_ENTRIES = 500;
+interface CachedFilterEntry {
+  result: FilterResult;
+  storedAt: number;
+}
+const filterCache = new Map<string, CachedFilterEntry>();
 const inflightRequests = new Map<string, Promise<FilterResult>>();
 const inflightResolvers = new Map<
   string,
@@ -259,9 +297,9 @@ async function flushBatchQueue(): Promise<void> {
     );
 
     response.results.forEach((result, index) => {
-      const targetText = texts[index];
-      const normalized = result ?? createFallbackResult(targetText);
-      filterCache.set(targetText, normalized);
+  const targetText = texts[index];
+  const normalized = result ?? createFallbackResult(targetText);
+  setCachedFilterResult(targetText, normalized);
 
       console.log("[WebPurifier] 필터 응답", {
         text: targetText.slice(0, 60),
@@ -281,9 +319,9 @@ async function flushBatchQueue(): Promise<void> {
 
     // 응답에 매칭이 없을 경우 개별 fallback 적용
     texts.forEach((targetText) => {
-      if (!filterCache.has(targetText)) {
+      if (!getCachedFilterResult(targetText)) {
         const fallback = createFallbackResult(targetText);
-        filterCache.set(targetText, fallback);
+        setCachedFilterResult(targetText, fallback);
         const resolver = inflightResolvers.get(targetText);
         if (resolver) {
           resolver.resolve(fallback);
@@ -314,7 +352,7 @@ async function getFilterResult(
   text: string,
   config: StoredConfig
 ): Promise<FilterResult> {
-  const cached = filterCache.get(text);
+  const cached = getCachedFilterResult(text);
   if (cached) {
     return cached;
   }
@@ -580,6 +618,35 @@ const blurClickHandlerMap = new WeakMap<Element, EventListener>();
 let feedbackListenersAttached = false;
 let activeFeedbackContext: FeedbackContext | null = null;
 
+const requestIdleCallbackFn =
+  typeof window !== "undefined" &&
+  typeof (window as Window & { requestIdleCallback?: unknown }).requestIdleCallback ===
+    "function"
+    ? (
+        (window as Window & {
+          requestIdleCallback: (
+            callback: (deadline: IdleDeadlineLike) => void,
+            options?: { timeout?: number }
+          ) => number;
+        }).requestIdleCallback
+      ).bind(window)
+    : null;
+const cancelIdleCallbackFn =
+  typeof window !== "undefined" &&
+  typeof (window as Window & { cancelIdleCallback?: unknown }).cancelIdleCallback ===
+    "function"
+    ? (
+        (window as Window & {
+          cancelIdleCallback: (handle: number) => void;
+        }).cancelIdleCallback
+      ).bind(window)
+    : null;
+const scanQueue: Node[] = [];
+let scanScheduled = false;
+let scanIdleHandle: number | null = null;
+let scanIdleMode: "idle" | "timeout" | null = null;
+const MAX_SCAN_NODES_PER_CHUNK = 200;
+
 let selectionButton: HTMLButtonElement | null = null;
 let selectionPanel: HTMLElement | null = null;
 let selectionSelect: HTMLSelectElement | null = null;
@@ -819,7 +886,7 @@ function startObserver() {
     for (const mutation of mutations) {
       if (mutation.type === "childList") {
         mutation.addedNodes.forEach((node) => {
-          scanNode(node);
+          enqueueScanNode(node);
         });
         mutation.removedNodes.forEach((node) => {
           cleanupRemovedNode(node);
@@ -848,14 +915,82 @@ function stopObserver() {
   highPriorityQueue.length = 0;
   lowPriorityQueue.length = 0;
   isProcessing = false;
+  scanQueue.length = 0;
+  if (scanIdleHandle !== null) {
+    if (scanIdleMode === "idle" && cancelIdleCallbackFn) {
+      cancelIdleCallbackFn(scanIdleHandle);
+    } else {
+      window.clearTimeout(scanIdleHandle);
+    }
+    scanIdleHandle = null;
+    scanIdleMode = null;
+  }
+  scanScheduled = false;
   clearAllPending();
 }
 
 function rescanDocument() {
-  scanNode(document.body);
+  enqueueScanNode(document.body);
 }
 
-function scanNode(node: Node) {
+function enqueueScanNode(node: Node): void {
+  if (!node) {
+    return;
+  }
+  scanQueue.push(node);
+  if (!scanScheduled) {
+    scheduleScanProcessing();
+  }
+}
+
+function scheduleScanProcessing(): void {
+  scanScheduled = true;
+  const runner = (deadline?: IdleDeadlineLike) => {
+    scanIdleHandle = null;
+    scanIdleMode = null;
+    processScanQueue(deadline);
+  };
+  if (requestIdleCallbackFn) {
+    scanIdleMode = "idle";
+    scanIdleHandle = requestIdleCallbackFn((deadline) => runner(deadline), {
+      timeout: 100,
+    });
+    return;
+  }
+  scanIdleMode = "timeout";
+  scanIdleHandle = window.setTimeout(() => runner(), 16);
+}
+
+function processScanQueue(deadline?: IdleDeadlineLike): void {
+  scanScheduled = false;
+  let processed = 0;
+  const shouldYield = () => {
+    if (deadline) {
+      if (deadline.timeRemaining() <= 0 && processed > 0) {
+        return true;
+      }
+      return false;
+    }
+    return processed >= MAX_SCAN_NODES_PER_CHUNK;
+  };
+
+  while (scanQueue.length) {
+    const next = scanQueue.shift();
+    if (next) {
+      scanNodeImmediate(next);
+      processed += 1;
+    }
+    if (shouldYield()) {
+      break;
+    }
+  }
+
+  if (scanQueue.length) {
+    scheduleScanProcessing();
+  }
+}
+
+function scanNodeImmediate(node: Node) {
   if (!currentConfig?.isEnabled || !currentConfig.token) {
     return;
   }

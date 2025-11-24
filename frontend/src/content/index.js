@@ -85,7 +85,34 @@ function getErrorMessage(error) {
     }
     return String(error);
 }
+function getCachedFilterResult(key) {
+    const entry = filterCache.get(key);
+    if (!entry) {
+        return null;
+    }
+    if (performance.now() - entry.storedAt > FILTER_CACHE_TTL_MS) {
+        filterCache.delete(key);
+        return null;
+    }
+    // LRU: refresh order
+    filterCache.delete(key);
+    filterCache.set(key, entry);
+    return entry.result;
+}
+function setCachedFilterResult(key, value) {
+    filterCache.delete(key);
+    filterCache.set(key, { result: value, storedAt: performance.now() });
+    if (filterCache.size <= FILTER_CACHE_MAX_ENTRIES) {
+        return;
+    }
+    const oldestKey = filterCache.keys().next().value;
+    if (oldestKey) {
+        filterCache.delete(oldestKey);
+    }
+}
 // 동일한 텍스트에 대한 요청을 캐시하여 서버 부하를 줄인다
+const FILTER_CACHE_TTL_MS = 10 * 60 * 1000;
+const FILTER_CACHE_MAX_ENTRIES = 500;
 const filterCache = new Map();
 const inflightRequests = new Map();
 const inflightResolvers = new Map();
@@ -158,7 +185,7 @@ async function flushBatchQueue() {
         response.results.forEach((result, index) => {
             const targetText = texts[index];
             const normalized = result ?? createFallbackResult(targetText);
-            filterCache.set(targetText, normalized);
+            setCachedFilterResult(targetText, normalized);
             console.log("[WebPurifier] 필터 응답", {
                 text: targetText.slice(0, 60),
                 shouldFilter: normalized.should_filter,
@@ -173,9 +200,9 @@ async function flushBatchQueue() {
         });
         // 응답에 매칭이 없을 경우 개별 fallback 적용
         texts.forEach((targetText) => {
-            if (!filterCache.has(targetText)) {
+            if (!getCachedFilterResult(targetText)) {
                 const fallback = createFallbackResult(targetText);
-                filterCache.set(targetText, fallback);
+                setCachedFilterResult(targetText, fallback);
                 const resolver = inflightResolvers.get(targetText);
                 if (resolver) {
                     resolver.resolve(fallback);
@@ -204,7 +231,7 @@ async function flushBatchQueue() {
     }
 }
 async function getFilterResult(text, config) {
-    const cached = filterCache.get(text);
+    const cached = getCachedFilterResult(text);
     if (cached) {
         return cached;
     }
@@ -423,6 +450,21 @@ const feedbackContextSet = new Set();
 const blurClickHandlerMap = new WeakMap();
 let feedbackListenersAttached = false;
 let activeFeedbackContext = null;
+const requestIdleCallbackFn = typeof window !== "undefined" &&
+    typeof window.requestIdleCallback ===
+        "function"
+    ? (window.requestIdleCallback).bind(window)
+    : null;
+const cancelIdleCallbackFn = typeof window !== "undefined" &&
+    typeof window.cancelIdleCallback ===
+        "function"
+    ? (window.cancelIdleCallback).bind(window)
+    : null;
+const scanQueue = [];
+let scanScheduled = false;
+let scanIdleHandle = null;
+let scanIdleMode = null;
+const MAX_SCAN_NODES_PER_CHUNK = 200;
 let selectionButton = null;
 let selectionPanel = null;
 let selectionSelect = null;
@@ -651,7 +693,7 @@ function startObserver() {
         for (const mutation of mutations) {
             if (mutation.type === "childList") {
                 mutation.addedNodes.forEach((node) => {
-                    scanNode(node);
+                    enqueueScanNode(node);
                 });
                 mutation.removedNodes.forEach((node) => {
                     cleanupRemovedNode(node);
@@ -675,12 +717,76 @@ function stopObserver() {
     highPriorityQueue.length = 0;
     lowPriorityQueue.length = 0;
     isProcessing = false;
+    scanQueue.length = 0;
+    if (scanIdleHandle !== null) {
+        if (scanIdleMode === "idle" && cancelIdleCallbackFn) {
+            cancelIdleCallbackFn(scanIdleHandle);
+        }
+        else {
+            window.clearTimeout(scanIdleHandle);
+        }
+        scanIdleHandle = null;
+        scanIdleMode = null;
+    }
+    scanScheduled = false;
     clearAllPending();
 }
 function rescanDocument() {
-    scanNode(document.body);
+    enqueueScanNode(document.body);
 }
-function scanNode(node) {
+function enqueueScanNode(node) {
+    if (!node) {
+        return;
+    }
+    scanQueue.push(node);
+    if (!scanScheduled) {
+        scheduleScanProcessing();
+    }
+}
+function scheduleScanProcessing() {
+    scanScheduled = true;
+    const runner = (deadline) => {
+        scanIdleHandle = null;
+        scanIdleMode = null;
+        processScanQueue(deadline);
+    };
+    if (requestIdleCallbackFn) {
+        scanIdleMode = "idle";
+        scanIdleHandle = requestIdleCallbackFn((deadline) => runner(deadline), {
+            timeout: 100,
+        });
+        return;
+    }
+    scanIdleMode = "timeout";
+    scanIdleHandle = window.setTimeout(() => runner(), 16);
+}
+function processScanQueue(deadline) {
+    scanScheduled = false;
+    let processed = 0;
+    const shouldYield = () => {
+        if (deadline) {
+            if (deadline.timeRemaining() <= 0 && processed > 0) {
+                return true;
+            }
+            return false;
+        }
+        return processed >= MAX_SCAN_NODES_PER_CHUNK;
+    };
+    while (scanQueue.length) {
+        const next = scanQueue.shift();
+        if (next) {
+            scanNodeImmediate(next);
+            processed += 1;
+        }
+        if (shouldYield()) {
+            break;
+        }
+    }
+    if (scanQueue.length) {
+        scheduleScanProcessing();
+    }
+}
+function scanNodeImmediate(node) {
     if (!currentConfig?.isEnabled || !currentConfig.token) {
         return;
     }
