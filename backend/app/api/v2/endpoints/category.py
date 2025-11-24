@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 
 from app.schemas.v2.category import (
     CategoryCreateRequest,
+    CategoryDeleteRequest,
     CategoryDeleteResponse,
     CategoryResponse,
 )
@@ -53,15 +54,15 @@ def get_categories(
         raise HTTPException(status_code=500, detail="카테고리 조회 중 서버 오류 발생")
 
 
-@router.delete("/{category_id}", response_model=CategoryDeleteResponse)
+@router.delete("/", response_model=CategoryDeleteResponse)
 def delete_category(
-    category_id: int,
+    req: CategoryDeleteRequest,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
     try:
         deleted_id = delete_category_service(
-            db=db, user_id=user.id, category_id=category_id
+            db=db, user_id=user.id, category_id=req.id
         )
         return CategoryDeleteResponse(id=deleted_id, message="카테고리를 삭제했습니다.")
     except ValueError as e:
