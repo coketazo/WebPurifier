@@ -51,6 +51,11 @@ type RuntimeMessage =
   | { type: "CONFIG_UPDATED"; payload: StoredConfig }
   | { type: "REQUEST_CONTENT_REFRESH" };
 
+type IdleDeadlineLike = {
+  didTimeout: boolean;
+  timeRemaining(): number;
+};
+
 const STORAGE_KEY = "webpurifier_config";
 const DEFAULT_API_BASE_URL = "http://localhost:8000";
 
@@ -161,16 +166,68 @@ function getErrorMessage(error: unknown): string {
   return String(error);
 }
 
+function getCachedFilterResult(key: string): FilterResult | null {
+  const entry = filterCache.get(key);
+  if (!entry) {
+    return null;
+  }
+  if (performance.now() - entry.storedAt > FILTER_CACHE_TTL_MS) {
+    filterCache.delete(key);
+    return null;
+  }
+  // LRU: refresh order
+  filterCache.delete(key);
+  filterCache.set(key, entry);
+  return entry.result;
+}
+
+function setCachedFilterResult(key: string, value: FilterResult): void {
+  filterCache.delete(key);
+  filterCache.set(key, { result: value, storedAt: performance.now() });
+  if (filterCache.size <= FILTER_CACHE_MAX_ENTRIES) {
+    return;
+  }
+  const oldestKey = filterCache.keys().next().value as string | undefined;
+  if (oldestKey) {
+    filterCache.delete(oldestKey);
+  }
+}
+
 // 동일한 텍스트에 대한 요청을 캐시하여 서버 부하를 줄인다
-const filterCache = new Map<string, FilterResult>();
+const FILTER_CACHE_TTL_MS = 10 * 60 * 1000;
+const FILTER_CACHE_MAX_ENTRIES = 500;
+interface CachedFilterEntry {
+  result: FilterResult;
+  storedAt: number;
+}
+const filterCache = new Map<string, CachedFilterEntry>();
 const inflightRequests = new Map<string, Promise<FilterResult>>();
 const inflightResolvers = new Map<
   string,
   { resolve: (value: FilterResult) => void; reject: (reason?: unknown) => void }
 >();
 
+const FNV_OFFSET_BASIS = 2166136261;
+const FNV_PRIME = 16777619;
+
+function hashTextContent(text: string): string {
+  let hash = FNV_OFFSET_BASIS;
+  for (let i = 0; i < text.length; i += 1) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, FNV_PRIME);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+function getFilterCacheKey(text: string, config: StoredConfig): string {
+  const hash = hashTextContent(text);
+  const lengthPart = text.length.toString(16);
+  return `${hash}:${lengthPart}:${getConfigKey(config)}`;
+}
+
 interface BatchItem {
   text: string;
+  key: string;
   config: StoredConfig;
 }
 
@@ -240,6 +297,7 @@ async function flushBatchQueue(): Promise<void> {
   }
 
   const texts = batch.map((item) => item.text);
+  const keys = batch.map((item) => item.key);
   const config = first.config;
 
   batchInFlight = true;
@@ -260,8 +318,9 @@ async function flushBatchQueue(): Promise<void> {
 
     response.results.forEach((result, index) => {
       const targetText = texts[index];
+      const cacheKey = keys[index];
       const normalized = result ?? createFallbackResult(targetText);
-      filterCache.set(targetText, normalized);
+      setCachedFilterResult(cacheKey, normalized);
 
       console.log("[WebPurifier] 필터 응답", {
         text: targetText.slice(0, 60),
@@ -271,35 +330,36 @@ async function flushBatchQueue(): Promise<void> {
         ),
       });
 
-      const resolver = inflightResolvers.get(targetText);
+      const resolver = inflightResolvers.get(cacheKey);
       if (resolver) {
         resolver.resolve(normalized);
-        inflightResolvers.delete(targetText);
+        inflightResolvers.delete(cacheKey);
       }
-      inflightRequests.delete(targetText);
+      inflightRequests.delete(cacheKey);
     });
 
     // 응답에 매칭이 없을 경우 개별 fallback 적용
-    texts.forEach((targetText) => {
-      if (!filterCache.has(targetText)) {
+    texts.forEach((targetText, index) => {
+      const cacheKey = keys[index];
+      if (!getCachedFilterResult(cacheKey)) {
         const fallback = createFallbackResult(targetText);
-        filterCache.set(targetText, fallback);
-        const resolver = inflightResolvers.get(targetText);
+        setCachedFilterResult(cacheKey, fallback);
+        const resolver = inflightResolvers.get(cacheKey);
         if (resolver) {
           resolver.resolve(fallback);
-          inflightResolvers.delete(targetText);
+          inflightResolvers.delete(cacheKey);
         }
-        inflightRequests.delete(targetText);
+        inflightRequests.delete(cacheKey);
       }
     });
   } catch (error) {
     console.error("[WebPurifier] 필터 요청 실패(batch)", error);
-    texts.forEach((targetText) => {
-      inflightRequests.delete(targetText);
-      const resolver = inflightResolvers.get(targetText);
+    keys.forEach((cacheKey) => {
+      inflightRequests.delete(cacheKey);
+      const resolver = inflightResolvers.get(cacheKey);
       if (resolver) {
         resolver.reject(error);
-        inflightResolvers.delete(targetText);
+        inflightResolvers.delete(cacheKey);
       }
     });
   } finally {
@@ -314,22 +374,23 @@ async function getFilterResult(
   text: string,
   config: StoredConfig
 ): Promise<FilterResult> {
-  const cached = filterCache.get(text);
+  const cacheKey = getFilterCacheKey(text, config);
+  const cached = getCachedFilterResult(cacheKey);
   if (cached) {
     return cached;
   }
 
-  const inflight = inflightRequests.get(text);
+  const inflight = inflightRequests.get(cacheKey);
   if (inflight) {
     return inflight;
   }
 
   const requestPromise = new Promise<FilterResult>((resolve, reject) => {
-    inflightResolvers.set(text, { resolve, reject });
+    inflightResolvers.set(cacheKey, { resolve, reject });
   });
 
-  inflightRequests.set(text, requestPromise);
-  batchQueue.push({ text, config });
+  inflightRequests.set(cacheKey, requestPromise);
+  batchQueue.push({ text, key: cacheKey, config });
   scheduleBatchFlush();
 
   return requestPromise;
@@ -358,6 +419,40 @@ const DEBOUNCE_MS = 150; // 동일 노드 텍스트 변동 디바운스 시간
 const MAX_CONCURRENT_REQUESTS = 6; // 동시에 진행할 최대 요청 수
 const VIEWPORT_MARGIN = 200; // 뷰포트 경계 여유값(px)
 
+interface CachedRect {
+  rect: DOMRectReadOnly;
+  measuredAt: number;
+}
+
+const RECT_CACHE_TTL_MS = 80;
+let rectCache: WeakMap<Element, CachedRect> = new WeakMap();
+let rectCacheResetScheduled = false;
+
+function getElementRect(element: Element): DOMRectReadOnly {
+  const now = performance.now();
+  const cached = rectCache.get(element);
+  if (cached && now - cached.measuredAt < RECT_CACHE_TTL_MS) {
+    return cached.rect;
+  }
+  const rect = element.getBoundingClientRect();
+  rectCache.set(element, { rect, measuredAt: now });
+  return rect;
+}
+
+function scheduleRectCacheReset(): void {
+  if (rectCacheResetScheduled) {
+    return;
+  }
+  rectCacheResetScheduled = true;
+  window.requestAnimationFrame(() => {
+    rectCache = new WeakMap();
+    rectCacheResetScheduled = false;
+  });
+}
+
+window.addEventListener("scroll", scheduleRectCacheReset, true);
+window.addEventListener("resize", scheduleRectCacheReset);
+
 let currentConfig: StoredConfig | null = null;
 let observer: MutationObserver | null = null;
 let styleInjected = false;
@@ -371,6 +466,148 @@ let activeRequests = 0;
 const highPriorityQueue: Text[] = [];
 const lowPriorityQueue: Text[] = [];
 
+interface TextBlurCacheEntry {
+  parent: Element | null;
+  target: Element | null;
+}
+
+const blurTargetCache = new WeakMap<Element, Element | null>();
+const textBlurTargetCache = new WeakMap<Text, TextBlurCacheEntry>();
+const textPendingTarget = new WeakMap<Text, Element | null>();
+const targetNodeMap = new WeakMap<Element, Set<Text>>();
+const HAS_INTERSECTION_OBSERVER =
+  typeof window !== "undefined" && "IntersectionObserver" in window;
+let blurTargetObserver: IntersectionObserver | null = null;
+const observedBlurTargets = new WeakSet<Element>();
+const visibleBlurTargets = new WeakSet<Element>();
+const visibilityKnownTargets = new WeakSet<Element>();
+
+function ensureBlurTargetObserver(): IntersectionObserver | null {
+  if (!HAS_INTERSECTION_OBSERVER) {
+    return null;
+  }
+  if (blurTargetObserver) {
+    return blurTargetObserver;
+  }
+  blurTargetObserver = new IntersectionObserver(
+    (entries) => {
+      entries.forEach((entry) => {
+        const element = entry.target as Element;
+        if (entry.isIntersecting) {
+          visibleBlurTargets.add(element);
+          promoteNodesForTarget(element);
+        } else {
+          visibleBlurTargets.delete(element);
+        }
+        visibilityKnownTargets.add(element);
+      });
+    },
+    {
+      root: null,
+      rootMargin: `${VIEWPORT_MARGIN}px 0px ${VIEWPORT_MARGIN}px 0px`,
+      threshold: 0,
+    }
+  );
+  return blurTargetObserver;
+}
+
+function observeBlurTarget(element: Element | null): void {
+  if (!element) {
+    return;
+  }
+  const observer = ensureBlurTargetObserver();
+  if (!observer || observedBlurTargets.has(element)) {
+    return;
+  }
+  observer.observe(element);
+  observedBlurTargets.add(element);
+}
+
+function unobserveBlurTarget(element: Element | null): void {
+  if (!element || !blurTargetObserver || !observedBlurTargets.has(element)) {
+    return;
+  }
+  blurTargetObserver.unobserve(element);
+  observedBlurTargets.delete(element);
+  visibleBlurTargets.delete(element);
+  visibilityKnownTargets.delete(element);
+}
+
+function registerNodeForTarget(node: Text, target: Element | null): void {
+  if (!target) {
+    return;
+  }
+  let nodes = targetNodeMap.get(target);
+  if (!nodes) {
+    nodes = new Set();
+    targetNodeMap.set(target, nodes);
+  }
+  nodes.add(node);
+}
+
+function unregisterNodeForTarget(node: Text, target: Element | null): void {
+  if (!target) {
+    return;
+  }
+  const nodes = targetNodeMap.get(target);
+  if (!nodes) {
+    return;
+  }
+  nodes.delete(node);
+  if (nodes.size === 0) {
+    targetNodeMap.delete(target);
+  }
+}
+
+function promoteNodesForTarget(target: Element): void {
+  const nodes = targetNodeMap.get(target);
+  if (!nodes || nodes.size === 0) {
+    return;
+  }
+  if (lowPriorityQueue.length === 0) {
+    return;
+  }
+  const promoteSet = new Set(nodes);
+  if (promoteSet.size === 0) {
+    return;
+  }
+  const remainingLow: Text[] = [];
+  let promoted = false;
+  for (const node of lowPriorityQueue) {
+    if (promoteSet.has(node)) {
+      highPriorityQueue.push(node);
+      promoted = true;
+    } else {
+      remainingLow.push(node);
+    }
+  }
+  if (promoted) {
+    lowPriorityQueue.length = 0;
+    remainingLow.forEach((node) => lowPriorityQueue.push(node));
+    processQueue();
+  }
+}
+
+function isTargetWithinViewport(target: Element): boolean {
+  const rect = getElementRect(target);
+  const extendedTop = -VIEWPORT_MARGIN;
+  const extendedBottom = window.innerHeight + VIEWPORT_MARGIN;
+  return rect.bottom >= extendedTop && rect.top <= extendedBottom;
+}
+
+function isTargetVisible(target: Element): boolean {
+  if (!HAS_INTERSECTION_OBSERVER) {
+    return isTargetWithinViewport(target);
+  }
+  if (visibleBlurTargets.has(target)) {
+    return true;
+  }
+  if (!visibilityKnownTargets.has(target)) {
+    return isTargetWithinViewport(target);
+  }
+  return false;
+}
+
 function getQueueLength(): number {
   return highPriorityQueue.length + lowPriorityQueue.length;
 }
@@ -380,16 +617,11 @@ function dequeueNode(): Text | undefined {
 }
 
 function isNodeHighPriority(node: Text): boolean {
-  const target = findBlurTarget(node.parentElement);
+  const target = getBlurTargetForText(node);
   if (!target) {
     return false;
   }
-
-  const rect = target.getBoundingClientRect();
-  const extendedTop = -VIEWPORT_MARGIN;
-  const extendedBottom = window.innerHeight + VIEWPORT_MARGIN;
-
-  return rect.bottom >= extendedTop && rect.top <= extendedBottom;
+  return isTargetVisible(target);
 }
 interface FeedbackContext {
   element: Element;
@@ -405,9 +637,38 @@ interface FeedbackContext {
 
 const feedbackContextMap = new WeakMap<Element, FeedbackContext>();
 const feedbackContextSet = new Set<FeedbackContext>();
-const blurClickHandlerMap = new WeakMap<Element, EventListener>();
 let feedbackListenersAttached = false;
+let blurClickDelegationAttached = false;
 let activeFeedbackContext: FeedbackContext | null = null;
+
+const requestIdleCallbackFn =
+  typeof window !== "undefined" &&
+  typeof (window as Window & { requestIdleCallback?: unknown }).requestIdleCallback ===
+    "function"
+    ? (
+        (window as Window & {
+          requestIdleCallback: (
+            callback: (deadline: IdleDeadlineLike) => void,
+            options?: { timeout?: number }
+          ) => number;
+        }).requestIdleCallback
+      ).bind(window)
+    : null;
+const cancelIdleCallbackFn =
+  typeof window !== "undefined" &&
+  typeof (window as Window & { cancelIdleCallback?: unknown }).cancelIdleCallback ===
+    "function"
+    ? (
+        (window as Window & {
+          cancelIdleCallback: (handle: number) => void;
+        }).cancelIdleCallback
+      ).bind(window)
+    : null;
+const scanQueue: Node[] = [];
+let scanScheduled = false;
+let scanIdleHandle: number | null = null;
+let scanIdleMode: "idle" | "timeout" | null = null;
+const MAX_SCAN_NODES_PER_CHUNK = 200;
 
 let selectionButton: HTMLButtonElement | null = null;
 let selectionPanel: HTMLElement | null = null;
@@ -648,7 +909,7 @@ function startObserver() {
     for (const mutation of mutations) {
       if (mutation.type === "childList") {
         mutation.addedNodes.forEach((node) => {
-          scanNode(node);
+          enqueueScanNode(node);
         });
         mutation.removedNodes.forEach((node) => {
           cleanupRemovedNode(node);
@@ -677,14 +938,82 @@ function stopObserver() {
   highPriorityQueue.length = 0;
   lowPriorityQueue.length = 0;
   isProcessing = false;
+  scanQueue.length = 0;
+  if (scanIdleHandle !== null) {
+    if (scanIdleMode === "idle" && cancelIdleCallbackFn) {
+      cancelIdleCallbackFn(scanIdleHandle);
+    } else {
+      window.clearTimeout(scanIdleHandle);
+    }
+    scanIdleHandle = null;
+    scanIdleMode = null;
+  }
+  scanScheduled = false;
   clearAllPending();
 }
 
 function rescanDocument() {
-  scanNode(document.body);
+  enqueueScanNode(document.body);
 }
 
-function scanNode(node: Node) {
+function enqueueScanNode(node: Node): void {
+  if (!node) {
+    return;
+  }
+  scanQueue.push(node);
+  if (!scanScheduled) {
+    scheduleScanProcessing();
+  }
+}
+
+function scheduleScanProcessing(): void {
+  scanScheduled = true;
+  const runner = (deadline?: IdleDeadlineLike) => {
+    scanIdleHandle = null;
+    scanIdleMode = null;
+    processScanQueue(deadline);
+  };
+  if (requestIdleCallbackFn) {
+    scanIdleMode = "idle";
+    scanIdleHandle = requestIdleCallbackFn((deadline) => runner(deadline), {
+      timeout: 100,
+    });
+    return;
+  }
+  scanIdleMode = "timeout";
+  scanIdleHandle = window.setTimeout(() => runner(), 16);
+}
+
+function processScanQueue(deadline?: IdleDeadlineLike): void {
+  scanScheduled = false;
+  let processed = 0;
+  const shouldYield = () => {
+    if (deadline) {
+      if (deadline.timeRemaining() <= 0 && processed > 0) {
+        return true;
+      }
+      return false;
+    }
+    return processed >= MAX_SCAN_NODES_PER_CHUNK;
+  };
+
+  while (scanQueue.length) {
+    const next = scanQueue.shift();
+    if (next) {
+      scanNodeImmediate(next);
+      processed += 1;
+    }
+    if (shouldYield()) {
+      break;
+    }
+  }
+
+  if (scanQueue.length) {
+    scheduleScanProcessing();
+  }
+}
+
+function scanNodeImmediate(node: Node) {
   if (!currentConfig?.isEnabled || !currentConfig.token) {
     return;
   }
@@ -721,7 +1050,9 @@ function enqueueNode(node: Text) {
   ) {
     return;
   }
-  const targetElement = findBlurTarget(node.parentElement);
+  const targetElement = getBlurTargetForText(node);
+  textPendingTarget.set(node, targetElement);
+  registerNodeForTarget(node, targetElement);
   markPending(targetElement);
   // 디바운스: 같은 노드 텍스트가 짧은 시간에 여러 번 바뀔 때 1회만 처리
   const prevTimer = debounceTimers.get(node);
@@ -741,6 +1072,11 @@ function queueNode(node: Text): void {
     return;
   }
   flagged.__webpurifierQueued = true;
+  const target = textPendingTarget.get(node) ?? getBlurTargetForText(node);
+  if (!textPendingTarget.has(node) && target) {
+    textPendingTarget.set(node, target);
+    registerNodeForTarget(node, target);
+  }
   if (isNodeHighPriority(node)) {
     highPriorityQueue.push(node);
   } else {
@@ -792,25 +1128,29 @@ function processQueue() {
 
 async function evaluateNode(node: Text) {
   const content = node.textContent?.trim();
-  if (
-    !content ||
-    content.length < MIN_TEXT_LENGTH ||
-    !KOREAN_REGEX.test(content)
-  ) {
-    // 내용이 사라졌다면 이전에 적용했던 블러를 해제
-    removeBlur(findBlurTarget(node.parentElement));
+  const noFilterNeeded =
+    !content || content.length < MIN_TEXT_LENGTH || !KOREAN_REGEX.test(content);
+  if (noFilterNeeded) {
+    const targetRef = textPendingTarget.get(node) ?? getBlurTargetForText(node);
+    unregisterNodeForTarget(node, targetRef);
+    removeBlur(targetRef);
     return;
   }
 
   const truncated = content.slice(0, 1000);
-  let targetElement: Element | null = null;
+  let targetElement: Element | null = textPendingTarget.get(node) ?? null;
 
   try {
     if (!currentConfig) {
       return;
     }
 
-    targetElement = findBlurTarget(node.parentElement);
+    if (!targetElement) {
+      targetElement = getBlurTargetForText(node);
+      if (targetElement) {
+        textPendingTarget.set(node, targetElement);
+      }
+    }
     if (!targetElement) {
       return;
     }
@@ -826,6 +1166,8 @@ async function evaluateNode(node: Text) {
 
     const result = await getFilterResult(truncated, currentConfig);
     clearPending(targetElement);
+    unregisterNodeForTarget(node, targetElement);
+    textPendingTarget.delete(node);
 
     if (result.should_filter) {
       applyBlur(targetElement, truncated, result.matched_categories);
@@ -834,7 +1176,10 @@ async function evaluateNode(node: Text) {
     }
   } catch (error) {
     console.error("WebPurifier 필터 요청 실패", error);
-    clearPending(targetElement ?? findBlurTarget(node.parentElement));
+    const fallbackTarget = targetElement ?? getBlurTargetForText(node);
+    clearPending(fallbackTarget);
+    unregisterNodeForTarget(node, fallbackTarget);
+    textPendingTarget.delete(node);
   }
 }
 
@@ -916,17 +1261,45 @@ function cleanupBlur() {
   clearAllFeedback();
 }
 
+function getBlurTargetForText(node: Text): Element | null {
+  const parent = node.parentElement;
+  const cached = textBlurTargetCache.get(node);
+  if (cached && cached.parent === parent) {
+    return cached.target;
+  }
+  const target = findBlurTarget(parent);
+  if (target) {
+    observeBlurTarget(target);
+  }
+  textBlurTargetCache.set(node, { parent, target });
+  return target;
+}
+
 function findBlurTarget(element: Element | null): Element | null {
+  if (!element) {
+    return null;
+  }
+
+  const cached = blurTargetCache.get(element);
+  if (cached !== undefined) {
+    return cached;
+  }
+
   let current: Element | null = element;
   let depth = 0;
+  let resolved: Element | null = element;
+
   while (current && depth < 4) {
     if (current instanceof HTMLElement) {
-      return current;
+      resolved = current;
+      break;
     }
     current = current.parentElement;
     depth += 1;
   }
-  return element;
+
+  blurTargetCache.set(element, resolved);
+  return resolved;
 }
 
 function markPending(element: Element | null): void {
@@ -1488,7 +1861,6 @@ function attachFeedbackControls(
     feedbackContextSet.add(newContext);
     document.body.appendChild(overlay);
     ensureFeedbackListeners();
-    ensureBlurClickHandler(element);
 
     weakenBtn.addEventListener("click", (event) => {
       event.preventDefault();
@@ -1613,37 +1985,51 @@ function hideFeedbackOverlay(context: FeedbackContext): void {
   context.overlay.style.display = "none";
 }
 
-function ensureBlurClickHandler(element: Element): void {
-  if (blurClickHandlerMap.has(element)) {
+function ensureBlurClickDelegation(): void {
+  if (blurClickDelegationAttached) {
     return;
   }
-  const handler = (event: Event) => {
-    handleBlurredElementClick(element, event as MouseEvent);
-  };
-  blurClickHandlerMap.set(element, handler);
-  element.addEventListener("click", handler, true);
+  document.addEventListener("click", handleDelegatedBlurClick, true);
+  blurClickDelegationAttached = true;
 }
 
-function removeBlurClickHandler(element: Element): void {
-  const handler = blurClickHandlerMap.get(element);
-  if (!handler) {
+function teardownBlurClickDelegation(): void {
+  if (!blurClickDelegationAttached) {
     return;
   }
-  element.removeEventListener("click", handler, true);
-  blurClickHandlerMap.delete(element);
+  document.removeEventListener("click", handleDelegatedBlurClick, true);
+  blurClickDelegationAttached = false;
 }
 
-function handleBlurredElementClick(element: Element, event: MouseEvent): void {
-  if (event.button !== 0) {
+function handleDelegatedBlurClick(event: MouseEvent): void {
+  if (event.button !== 0 || !currentConfig?.token) {
     return;
   }
-  const context = feedbackContextMap.get(element);
-  if (!context || !currentConfig?.token) {
+  const targetElement = findBlurredElementFromEvent(event.target);
+  if (!targetElement) {
+    return;
+  }
+  if (targetElement.getAttribute("data-webpurifier-revealed") === "true") {
+    return;
+  }
+  const context = feedbackContextMap.get(targetElement);
+  if (!context) {
     return;
   }
   event.preventDefault();
   event.stopPropagation();
   activateWeakenFeedback(context);
+}
+
+function findBlurredElementFromEvent(target: EventTarget | null): Element | null {
+  let node: Element | null = target instanceof Element ? target : null;
+  while (node) {
+    if (node.hasAttribute("data-webpurifier-blurred")) {
+      return node;
+    }
+    node = node.parentElement;
+  }
+  return null;
 }
 
 function activateWeakenFeedback(context: FeedbackContext): void {
@@ -1725,6 +2111,7 @@ function ensureFeedbackListeners(): void {
   window.addEventListener("scroll", refreshFeedbackOverlayPositions, true);
   window.addEventListener("resize", refreshFeedbackOverlayPositions);
   document.addEventListener("mousedown", handleFeedbackOutsideClick, true);
+  ensureBlurClickDelegation();
   feedbackListenersAttached = true;
 }
 
@@ -1735,6 +2122,7 @@ function teardownFeedbackListeners(): void {
   window.removeEventListener("scroll", refreshFeedbackOverlayPositions, true);
   window.removeEventListener("resize", refreshFeedbackOverlayPositions);
   document.removeEventListener("mousedown", handleFeedbackOutsideClick, true);
+  teardownBlurClickDelegation();
   feedbackListenersAttached = false;
 }
 
@@ -1759,7 +2147,6 @@ function detachFeedback(element: Element): void {
   feedbackContextMap.delete(element);
   feedbackContextSet.delete(context);
   context.overlay.remove();
-  removeBlurClickHandler(element);
 
   if (feedbackContextSet.size === 0) {
     teardownFeedbackListeners();
@@ -1775,7 +2162,6 @@ function clearAllFeedback(): void {
     deactivateWeakenFeedback(context);
     context.overlay.remove();
     feedbackContextMap.delete(context.element);
-    removeBlurClickHandler(context.element);
   });
   feedbackContextSet.clear();
   teardownFeedbackListeners();
@@ -1862,9 +2248,19 @@ function getSelectedCategoryId(context: FeedbackContext): number | null {
 }
 
 function cleanupRemovedNode(node: Node): void {
+  if (node instanceof Text) {
+    textBlurTargetCache.delete(node);
+    const target = textPendingTarget.get(node) ?? null;
+    unregisterNodeForTarget(node, target);
+    textPendingTarget.delete(node);
+    return;
+  }
+
   if (!(node instanceof Element)) {
     return;
   }
+
+  unobserveBlurTarget(node);
 
   if (node.hasAttribute("data-webpurifier-pending")) {
     clearPending(node);
@@ -1878,11 +2274,13 @@ function cleanupRemovedNode(node: Node): void {
     .querySelectorAll("[data-webpurifier-pending='true']")
     .forEach((child) => {
       clearPending(child as Element);
+      unobserveBlurTarget(child as Element);
     });
 
   node
     .querySelectorAll("[data-webpurifier-blurred='true']")
     .forEach((child) => {
       removeBlur(child as Element);
+      unobserveBlurTarget(child as Element);
     });
 }

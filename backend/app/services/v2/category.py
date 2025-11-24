@@ -1,17 +1,25 @@
 import numpy as np
 from sqlalchemy.orm import Session
 
-from app.services.v1.llm import generate_text # Gemini 호출 함수
-from app.services.v2.embedding import sbert_model # SBERT 모델 객체
-from app.v2.models import Category # SQLAlchemy 모델
-from app.schemas.v2.category import CategoryResponse # 반환 타입용 스키마
+from app.services.v1.llm import generate_text  # Gemini 호출 함수
+from app.services.v2.embedding import sbert_model  # SBERT 모델 객체
+from app.services.v2.vector import serialize_normalized_vector
+from app.services.v2.category_cache import invalidate_category_cache
+from app.v2.models import Category, FeedbackLog  # SQLAlchemy 모델
+from app.schemas.v2.category import CategoryResponse  # 반환 타입용 스키마
+
 
 # LLM이 예시 문장 생성 실패 시 사용할 에러
 class ExampleGenerationError(Exception):
     pass
 
+
 def create_category(
-    db: Session, user_id: int, name: str, keywords: list[str], description: str | None = None
+    db: Session,
+    user_id: int,
+    name: str,
+    keywords: list[str],
+    description: str | None = None,
 ) -> Category:
     """사용자 키워드 기반으로 LLM을 이용해 대표 벡터를 생성하고 DB에 저장"""
 
@@ -26,14 +34,20 @@ def create_category(
     """
     try:
         # LLM 호출 시 응답 스키마를 지정하지 않으므로 일반 텍스트로 받음
-        selected_sentences_text = generate_text(content="", prompt=prompt_for_examples_and_selection)
-        final_sentences = selected_sentences_text.strip().split('\n')
+        selected_sentences_text = generate_text(
+            content="", prompt=prompt_for_examples_and_selection
+        )
+        final_sentences = selected_sentences_text.strip().split("\n")
         print("LLM이 생성/선별한 예시 문장들:", final_sentences)
-        
+
         # 생성된 문장이 비어있거나 유효하지 않은 경우 에러 발생
-        if not final_sentences or not final_sentences[0] or len(final_sentences) < 3: # 최소 3개 이상은 생성되어야 함
-             raise ExampleGenerationError("LLM이 유효한 예시 문장을 충분히 생성하지 못했습니다.")
-        
+        if (
+            not final_sentences or not final_sentences[0] or len(final_sentences) < 3
+        ):  # 최소 3개 이상은 생성되어야 함
+            raise ExampleGenerationError(
+                "LLM이 유효한 예시 문장을 충분히 생성하지 못했습니다."
+            )
+
         # 빈 줄 제거
         final_sentences = [s for s in final_sentences if s.strip()]
 
@@ -42,11 +56,11 @@ def create_category(
         print(f"LLM 호출 중 에러 발생: {e}")
         raise ExampleGenerationError(f"LLM 예시 생성 실패: {e}") from e
 
-
     # --- 3단계: 대표 벡터 생성 ---
     try:
         embeddings = sbert_model.encode(final_sentences)
         representative_vector = np.mean(embeddings, axis=0)
+        serialized_embedding = serialize_normalized_vector(representative_vector)
     except Exception as e:
         # SBERT 인코딩 에러 처리
         print(f"SBERT 인코딩 중 에러 발생: {e}")
@@ -58,17 +72,18 @@ def create_category(
             user_id=user_id,
             name=name,
             description=description,
-            embedding=representative_vector.tolist() # NumPy 배열을 리스트로 변환
+            embedding=serialized_embedding,
         )
         db.add(new_category)
         db.commit()
         db.refresh(new_category)
-        
+        invalidate_category_cache(user_id)
+
         print(f"'{name}' 카테고리 생성 완료. ID: {new_category.id}")
         return new_category
     except Exception as e:
         # DB 저장 에러 처리
-        db.rollback() # 오류 발생 시 롤백
+        db.rollback()  # 오류 발생 시 롤백
         print(f"DB 저장 중 에러 발생: {e}")
         raise RuntimeError(f"카테고리 DB 저장 실패: {e}") from e
 
@@ -81,3 +96,36 @@ def list_user_categories(db: Session, user_id: int) -> list[Category]:
         .order_by(Category.created_at.desc())
         .all()
     )
+
+
+def delete_category(db: Session, user_id: int, category_id: int) -> int:
+    """사용자 카테고리와 관련 로그를 삭제하고 캐시를 무효화한다."""
+
+    category = (
+        db.query(Category)
+        .filter(Category.id == category_id, Category.user_id == user_id)
+        .first()
+    )
+
+    if category is None:
+        raise ValueError("카테고리를 찾을 수 없거나 접근 권한이 없습니다.")
+
+    try:
+        # 카테고리를 참조하는 피드백 로그 삭제 (외래키 제약 충돌 방지)
+        (
+            db.query(FeedbackLog)
+            .filter(
+                FeedbackLog.category_id == category_id,
+                FeedbackLog.user_id == user_id,
+            )
+            .delete(synchronize_session=False)
+        )
+
+        db.delete(category)
+        db.commit()
+    except Exception as exc:  # pragma: no cover - 예외 메시지 전달용
+        db.rollback()
+        raise RuntimeError(f"카테고리 삭제 실패: {exc}") from exc
+
+    invalidate_category_cache(user_id)
+    return category_id

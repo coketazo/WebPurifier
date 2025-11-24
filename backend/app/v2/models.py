@@ -6,6 +6,7 @@ from sqlalchemy import (
     TIMESTAMP,
     ForeignKey,
     UniqueConstraint,
+    LargeBinary,
 )
 from sqlalchemy.orm import relationship
 from pgvector.sqlalchemy import Vector  # pgvector 타입 임포트
@@ -33,7 +34,7 @@ class Category(Base):
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     name = Column(String(100), nullable=False)
     description = Column(Text)
-    embedding = Column(Vector(EMBEDDING_DIM))  # 벡터 타입 정의
+    embedding = Column(LargeBinary)  # 정규화된 float32 벡터를 직렬화하여 저장
     created_at = Column(TIMESTAMP(timezone=True), default=datetime.datetime.utcnow)
 
     owner = relationship("User", back_populates="categories")

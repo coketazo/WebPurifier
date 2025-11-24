@@ -43,6 +43,10 @@ type RuntimeMessage = {
 } | {
     type: "REQUEST_CONTENT_REFRESH";
 };
+type IdleDeadlineLike = {
+    didTimeout: boolean;
+    timeRemaining(): number;
+};
 declare const STORAGE_KEY = "webpurifier_config";
 declare const DEFAULT_API_BASE_URL = "http://localhost:8000";
 declare function loadConfig(): Promise<StoredConfig>;
@@ -51,14 +55,27 @@ declare function filterText(payload: FilterRequest, config: StoredConfig): Promi
 declare function sendFeedback(payload: FeedbackRequest, config: StoredConfig): Promise<FeedbackResponse>;
 declare function parseApiError(response: Response, fallback: string): Promise<string>;
 declare function getErrorMessage(error: unknown): string;
-declare const filterCache: Map<string, FilterResult>;
+declare function getCachedFilterResult(key: string): FilterResult | null;
+declare function setCachedFilterResult(key: string, value: FilterResult): void;
+declare const FILTER_CACHE_TTL_MS: number;
+declare const FILTER_CACHE_MAX_ENTRIES = 500;
+interface CachedFilterEntry {
+    result: FilterResult;
+    storedAt: number;
+}
+declare const filterCache: Map<string, CachedFilterEntry>;
 declare const inflightRequests: Map<string, Promise<FilterResult>>;
 declare const inflightResolvers: Map<string, {
     resolve: (value: FilterResult) => void;
     reject: (reason?: unknown) => void;
 }>;
+declare const FNV_OFFSET_BASIS = 2166136261;
+declare const FNV_PRIME = 16777619;
+declare function hashTextContent(text: string): string;
+declare function getFilterCacheKey(text: string, config: StoredConfig): string;
 interface BatchItem {
     text: string;
+    key: string;
     config: StoredConfig;
 }
 declare const batchQueue: BatchItem[];
@@ -91,6 +108,15 @@ declare const MIN_TEXT_LENGTH = 6;
 declare const DEBOUNCE_MS = 150;
 declare const MAX_CONCURRENT_REQUESTS = 6;
 declare const VIEWPORT_MARGIN = 200;
+interface CachedRect {
+    rect: DOMRectReadOnly;
+    measuredAt: number;
+}
+declare const RECT_CACHE_TTL_MS = 80;
+declare let rectCache: WeakMap<Element, CachedRect>;
+declare let rectCacheResetScheduled: boolean;
+declare function getElementRect(element: Element): DOMRectReadOnly;
+declare function scheduleRectCacheReset(): void;
 declare let currentConfig: StoredConfig | null;
 declare let observer: MutationObserver | null;
 declare let styleInjected: boolean;
@@ -102,6 +128,27 @@ declare const debounceTimers: WeakMap<Text, number>;
 declare let activeRequests: number;
 declare const highPriorityQueue: Text[];
 declare const lowPriorityQueue: Text[];
+interface TextBlurCacheEntry {
+    parent: Element | null;
+    target: Element | null;
+}
+declare const blurTargetCache: WeakMap<Element, Element | null>;
+declare const textBlurTargetCache: WeakMap<Text, TextBlurCacheEntry>;
+declare const textPendingTarget: WeakMap<Text, Element | null>;
+declare const targetNodeMap: WeakMap<Element, Set<Text>>;
+declare const HAS_INTERSECTION_OBSERVER: boolean;
+declare let blurTargetObserver: IntersectionObserver | null;
+declare const observedBlurTargets: WeakSet<Element>;
+declare const visibleBlurTargets: WeakSet<Element>;
+declare const visibilityKnownTargets: WeakSet<Element>;
+declare function ensureBlurTargetObserver(): IntersectionObserver | null;
+declare function observeBlurTarget(element: Element | null): void;
+declare function unobserveBlurTarget(element: Element | null): void;
+declare function registerNodeForTarget(node: Text, target: Element | null): void;
+declare function unregisterNodeForTarget(node: Text, target: Element | null): void;
+declare function promoteNodesForTarget(target: Element): void;
+declare function isTargetWithinViewport(target: Element): boolean;
+declare function isTargetVisible(target: Element): boolean;
 declare function getQueueLength(): number;
 declare function dequeueNode(): Text | undefined;
 declare function isNodeHighPriority(node: Text): boolean;
@@ -118,9 +165,18 @@ interface FeedbackContext {
 }
 declare const feedbackContextMap: WeakMap<Element, FeedbackContext>;
 declare const feedbackContextSet: Set<FeedbackContext>;
-declare const blurClickHandlerMap: WeakMap<Element, EventListener>;
 declare let feedbackListenersAttached: boolean;
+declare let blurClickDelegationAttached: boolean;
 declare let activeFeedbackContext: FeedbackContext | null;
+declare const requestIdleCallbackFn: (((callback: IdleRequestCallback, options?: IdleRequestOptions) => number) & ((callback: (deadline: IdleDeadlineLike) => void, options?: {
+    timeout?: number;
+}) => number)) | null;
+declare const cancelIdleCallbackFn: (((handle: number) => void) & ((handle: number) => void)) | null;
+declare const scanQueue: Node[];
+declare let scanScheduled: boolean;
+declare let scanIdleHandle: number | null;
+declare let scanIdleMode: "idle" | "timeout" | null;
+declare const MAX_SCAN_NODES_PER_CHUNK = 200;
 declare let selectionButton: HTMLButtonElement | null;
 declare let selectionPanel: HTMLElement | null;
 declare let selectionSelect: HTMLSelectElement | null;
@@ -142,7 +198,10 @@ declare function ensureStyle(): void;
 declare function startObserver(): void;
 declare function stopObserver(): void;
 declare function rescanDocument(): void;
-declare function scanNode(node: Node): void;
+declare function enqueueScanNode(node: Node): void;
+declare function scheduleScanProcessing(): void;
+declare function processScanQueue(deadline?: IdleDeadlineLike): void;
+declare function scanNodeImmediate(node: Node): void;
 declare function enqueueNode(node: Text): void;
 declare function queueNode(node: Text): void;
 declare function processQueue(): void;
@@ -150,6 +209,7 @@ declare function evaluateNode(node: Text): Promise<void>;
 declare function applyBlur(element: Element | null, text: string, categories: MatchedCategoryInfo[]): void;
 declare function removeBlur(element: Element | null): void;
 declare function cleanupBlur(): void;
+declare function getBlurTargetForText(node: Text): Element | null;
 declare function findBlurTarget(element: Element | null): Element | null;
 declare function markPending(element: Element | null): void;
 declare function clearPending(element: Element | null): void;
@@ -180,9 +240,10 @@ declare function positionFeedbackOverlay(context: FeedbackContext): void;
 declare function refreshFeedbackOverlayPositions(): void;
 declare function showFeedbackOverlay(context: FeedbackContext): void;
 declare function hideFeedbackOverlay(context: FeedbackContext): void;
-declare function ensureBlurClickHandler(element: Element): void;
-declare function removeBlurClickHandler(element: Element): void;
-declare function handleBlurredElementClick(element: Element, event: MouseEvent): void;
+declare function ensureBlurClickDelegation(): void;
+declare function teardownBlurClickDelegation(): void;
+declare function handleDelegatedBlurClick(event: MouseEvent): void;
+declare function findBlurredElementFromEvent(target: EventTarget | null): Element | null;
 declare function activateWeakenFeedback(context: FeedbackContext): void;
 declare function deactivateWeakenFeedback(context?: FeedbackContext): void;
 declare function revealBlurredElement(element: Element | null): void;
