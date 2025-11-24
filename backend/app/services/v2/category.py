@@ -5,7 +5,7 @@ from app.services.v1.llm import generate_text  # Gemini 호출 함수
 from app.services.v2.embedding import sbert_model  # SBERT 모델 객체
 from app.services.v2.vector import serialize_normalized_vector
 from app.services.v2.category_cache import invalidate_category_cache
-from app.v2.models import Category  # SQLAlchemy 모델
+from app.v2.models import Category, FeedbackLog  # SQLAlchemy 모델
 from app.schemas.v2.category import CategoryResponse  # 반환 타입용 스키마
 
 
@@ -96,3 +96,36 @@ def list_user_categories(db: Session, user_id: int) -> list[Category]:
         .order_by(Category.created_at.desc())
         .all()
     )
+
+
+def delete_category(db: Session, user_id: int, category_id: int) -> int:
+    """사용자 카테고리와 관련 로그를 삭제하고 캐시를 무효화한다."""
+
+    category = (
+        db.query(Category)
+        .filter(Category.id == category_id, Category.user_id == user_id)
+        .first()
+    )
+
+    if category is None:
+        raise ValueError("카테고리를 찾을 수 없거나 접근 권한이 없습니다.")
+
+    try:
+        # 카테고리를 참조하는 피드백 로그 삭제 (외래키 제약 충돌 방지)
+        (
+            db.query(FeedbackLog)
+            .filter(
+                FeedbackLog.category_id == category_id,
+                FeedbackLog.user_id == user_id,
+            )
+            .delete(synchronize_session=False)
+        )
+
+        db.delete(category)
+        db.commit()
+    except Exception as exc:  # pragma: no cover - 예외 메시지 전달용
+        db.rollback()
+        raise RuntimeError(f"카테고리 삭제 실패: {exc}") from exc
+
+    invalidate_category_cache(user_id)
+    return category_id
