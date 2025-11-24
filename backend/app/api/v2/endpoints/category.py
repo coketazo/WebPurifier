@@ -61,9 +61,7 @@ def delete_category(
     user: User = Depends(get_current_user),
 ):
     try:
-        deleted_id = delete_category_service(
-            db=db, user_id=user.id, category_id=req.id
-        )
+        deleted_id = delete_category_service(db=db, user_id=user.id, category_id=req.id)
         return CategoryDeleteResponse(id=deleted_id, message="카테고리를 삭제했습니다.")
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
