@@ -207,8 +207,27 @@ const inflightResolvers = new Map<
   { resolve: (value: FilterResult) => void; reject: (reason?: unknown) => void }
 >();
 
+const FNV_OFFSET_BASIS = 2166136261;
+const FNV_PRIME = 16777619;
+
+function hashTextContent(text: string): string {
+  let hash = FNV_OFFSET_BASIS;
+  for (let i = 0; i < text.length; i += 1) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, FNV_PRIME);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+function getFilterCacheKey(text: string, config: StoredConfig): string {
+  const hash = hashTextContent(text);
+  const lengthPart = text.length.toString(16);
+  return `${hash}:${lengthPart}:${getConfigKey(config)}`;
+}
+
 interface BatchItem {
   text: string;
+  key: string;
   config: StoredConfig;
 }
 
@@ -278,6 +297,7 @@ async function flushBatchQueue(): Promise<void> {
   }
 
   const texts = batch.map((item) => item.text);
+  const keys = batch.map((item) => item.key);
   const config = first.config;
 
   batchInFlight = true;
@@ -297,9 +317,10 @@ async function flushBatchQueue(): Promise<void> {
     );
 
     response.results.forEach((result, index) => {
-  const targetText = texts[index];
-  const normalized = result ?? createFallbackResult(targetText);
-  setCachedFilterResult(targetText, normalized);
+      const targetText = texts[index];
+      const cacheKey = keys[index];
+      const normalized = result ?? createFallbackResult(targetText);
+      setCachedFilterResult(cacheKey, normalized);
 
       console.log("[WebPurifier] 필터 응답", {
         text: targetText.slice(0, 60),
@@ -309,35 +330,36 @@ async function flushBatchQueue(): Promise<void> {
         ),
       });
 
-      const resolver = inflightResolvers.get(targetText);
+      const resolver = inflightResolvers.get(cacheKey);
       if (resolver) {
         resolver.resolve(normalized);
-        inflightResolvers.delete(targetText);
+        inflightResolvers.delete(cacheKey);
       }
-      inflightRequests.delete(targetText);
+      inflightRequests.delete(cacheKey);
     });
 
     // 응답에 매칭이 없을 경우 개별 fallback 적용
-    texts.forEach((targetText) => {
-      if (!getCachedFilterResult(targetText)) {
+    texts.forEach((targetText, index) => {
+      const cacheKey = keys[index];
+      if (!getCachedFilterResult(cacheKey)) {
         const fallback = createFallbackResult(targetText);
-        setCachedFilterResult(targetText, fallback);
-        const resolver = inflightResolvers.get(targetText);
+        setCachedFilterResult(cacheKey, fallback);
+        const resolver = inflightResolvers.get(cacheKey);
         if (resolver) {
           resolver.resolve(fallback);
-          inflightResolvers.delete(targetText);
+          inflightResolvers.delete(cacheKey);
         }
-        inflightRequests.delete(targetText);
+        inflightRequests.delete(cacheKey);
       }
     });
   } catch (error) {
     console.error("[WebPurifier] 필터 요청 실패(batch)", error);
-    texts.forEach((targetText) => {
-      inflightRequests.delete(targetText);
-      const resolver = inflightResolvers.get(targetText);
+    keys.forEach((cacheKey) => {
+      inflightRequests.delete(cacheKey);
+      const resolver = inflightResolvers.get(cacheKey);
       if (resolver) {
         resolver.reject(error);
-        inflightResolvers.delete(targetText);
+        inflightResolvers.delete(cacheKey);
       }
     });
   } finally {
@@ -352,22 +374,23 @@ async function getFilterResult(
   text: string,
   config: StoredConfig
 ): Promise<FilterResult> {
-  const cached = getCachedFilterResult(text);
+  const cacheKey = getFilterCacheKey(text, config);
+  const cached = getCachedFilterResult(cacheKey);
   if (cached) {
     return cached;
   }
 
-  const inflight = inflightRequests.get(text);
+  const inflight = inflightRequests.get(cacheKey);
   if (inflight) {
     return inflight;
   }
 
   const requestPromise = new Promise<FilterResult>((resolve, reject) => {
-    inflightResolvers.set(text, { resolve, reject });
+    inflightResolvers.set(cacheKey, { resolve, reject });
   });
 
-  inflightRequests.set(text, requestPromise);
-  batchQueue.push({ text, config });
+  inflightRequests.set(cacheKey, requestPromise);
+  batchQueue.push({ text, key: cacheKey, config });
   scheduleBatchFlush();
 
   return requestPromise;
@@ -614,8 +637,8 @@ interface FeedbackContext {
 
 const feedbackContextMap = new WeakMap<Element, FeedbackContext>();
 const feedbackContextSet = new Set<FeedbackContext>();
-const blurClickHandlerMap = new WeakMap<Element, EventListener>();
 let feedbackListenersAttached = false;
+let blurClickDelegationAttached = false;
 let activeFeedbackContext: FeedbackContext | null = null;
 
 const requestIdleCallbackFn =
@@ -1838,7 +1861,6 @@ function attachFeedbackControls(
     feedbackContextSet.add(newContext);
     document.body.appendChild(overlay);
     ensureFeedbackListeners();
-    ensureBlurClickHandler(element);
 
     weakenBtn.addEventListener("click", (event) => {
       event.preventDefault();
@@ -1963,40 +1985,51 @@ function hideFeedbackOverlay(context: FeedbackContext): void {
   context.overlay.style.display = "none";
 }
 
-function ensureBlurClickHandler(element: Element): void {
-  if (blurClickHandlerMap.has(element)) {
+function ensureBlurClickDelegation(): void {
+  if (blurClickDelegationAttached) {
     return;
   }
-  const handler = (event: Event) => {
-    handleBlurredElementClick(element, event as MouseEvent);
-  };
-  blurClickHandlerMap.set(element, handler);
-  element.addEventListener("click", handler, true);
+  document.addEventListener("click", handleDelegatedBlurClick, true);
+  blurClickDelegationAttached = true;
 }
 
-function removeBlurClickHandler(element: Element): void {
-  const handler = blurClickHandlerMap.get(element);
-  if (!handler) {
+function teardownBlurClickDelegation(): void {
+  if (!blurClickDelegationAttached) {
     return;
   }
-  element.removeEventListener("click", handler, true);
-  blurClickHandlerMap.delete(element);
+  document.removeEventListener("click", handleDelegatedBlurClick, true);
+  blurClickDelegationAttached = false;
 }
 
-function handleBlurredElementClick(element: Element, event: MouseEvent): void {
-  if (event.button !== 0) {
+function handleDelegatedBlurClick(event: MouseEvent): void {
+  if (event.button !== 0 || !currentConfig?.token) {
     return;
   }
-  const context = feedbackContextMap.get(element);
-  if (!context || !currentConfig?.token) {
+  const targetElement = findBlurredElementFromEvent(event.target);
+  if (!targetElement) {
     return;
   }
-  if (element.getAttribute("data-webpurifier-revealed") === "true") {
+  if (targetElement.getAttribute("data-webpurifier-revealed") === "true") {
+    return;
+  }
+  const context = feedbackContextMap.get(targetElement);
+  if (!context) {
     return;
   }
   event.preventDefault();
   event.stopPropagation();
   activateWeakenFeedback(context);
+}
+
+function findBlurredElementFromEvent(target: EventTarget | null): Element | null {
+  let node: Element | null = target instanceof Element ? target : null;
+  while (node) {
+    if (node.hasAttribute("data-webpurifier-blurred")) {
+      return node;
+    }
+    node = node.parentElement;
+  }
+  return null;
 }
 
 function activateWeakenFeedback(context: FeedbackContext): void {
@@ -2078,6 +2111,7 @@ function ensureFeedbackListeners(): void {
   window.addEventListener("scroll", refreshFeedbackOverlayPositions, true);
   window.addEventListener("resize", refreshFeedbackOverlayPositions);
   document.addEventListener("mousedown", handleFeedbackOutsideClick, true);
+  ensureBlurClickDelegation();
   feedbackListenersAttached = true;
 }
 
@@ -2088,6 +2122,7 @@ function teardownFeedbackListeners(): void {
   window.removeEventListener("scroll", refreshFeedbackOverlayPositions, true);
   window.removeEventListener("resize", refreshFeedbackOverlayPositions);
   document.removeEventListener("mousedown", handleFeedbackOutsideClick, true);
+  teardownBlurClickDelegation();
   feedbackListenersAttached = false;
 }
 
@@ -2112,7 +2147,6 @@ function detachFeedback(element: Element): void {
   feedbackContextMap.delete(element);
   feedbackContextSet.delete(context);
   context.overlay.remove();
-  removeBlurClickHandler(element);
 
   if (feedbackContextSet.size === 0) {
     teardownFeedbackListeners();
@@ -2128,7 +2162,6 @@ function clearAllFeedback(): void {
     deactivateWeakenFeedback(context);
     context.overlay.remove();
     feedbackContextMap.delete(context.element);
-    removeBlurClickHandler(context.element);
   });
   feedbackContextSet.clear();
   teardownFeedbackListeners();

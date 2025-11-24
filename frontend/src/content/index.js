@@ -116,6 +116,21 @@ const FILTER_CACHE_MAX_ENTRIES = 500;
 const filterCache = new Map();
 const inflightRequests = new Map();
 const inflightResolvers = new Map();
+const FNV_OFFSET_BASIS = 2166136261;
+const FNV_PRIME = 16777619;
+function hashTextContent(text) {
+    let hash = FNV_OFFSET_BASIS;
+    for (let i = 0; i < text.length; i += 1) {
+        hash ^= text.charCodeAt(i);
+        hash = Math.imul(hash, FNV_PRIME);
+    }
+    return (hash >>> 0).toString(16).padStart(8, "0");
+}
+function getFilterCacheKey(text, config) {
+    const hash = hashTextContent(text);
+    const lengthPart = text.length.toString(16);
+    return `${hash}:${lengthPart}:${getConfigKey(config)}`;
+}
 const batchQueue = [];
 let batchTimer = null;
 let batchInFlight = false;
@@ -170,6 +185,7 @@ async function flushBatchQueue() {
         }
     }
     const texts = batch.map((item) => item.text);
+    const keys = batch.map((item) => item.key);
     const config = first.config;
     batchInFlight = true;
     try {
@@ -184,42 +200,44 @@ async function flushBatchQueue() {
         }, config);
         response.results.forEach((result, index) => {
             const targetText = texts[index];
+            const cacheKey = keys[index];
             const normalized = result ?? createFallbackResult(targetText);
-            setCachedFilterResult(targetText, normalized);
+            setCachedFilterResult(cacheKey, normalized);
             console.log("[WebPurifier] 필터 응답", {
                 text: targetText.slice(0, 60),
                 shouldFilter: normalized.should_filter,
                 matched: normalized.matched_categories.map((item) => item.name),
             });
-            const resolver = inflightResolvers.get(targetText);
+            const resolver = inflightResolvers.get(cacheKey);
             if (resolver) {
                 resolver.resolve(normalized);
-                inflightResolvers.delete(targetText);
+                inflightResolvers.delete(cacheKey);
             }
-            inflightRequests.delete(targetText);
+            inflightRequests.delete(cacheKey);
         });
         // 응답에 매칭이 없을 경우 개별 fallback 적용
-        texts.forEach((targetText) => {
-            if (!getCachedFilterResult(targetText)) {
+        texts.forEach((targetText, index) => {
+            const cacheKey = keys[index];
+            if (!getCachedFilterResult(cacheKey)) {
                 const fallback = createFallbackResult(targetText);
-                setCachedFilterResult(targetText, fallback);
-                const resolver = inflightResolvers.get(targetText);
+                setCachedFilterResult(cacheKey, fallback);
+                const resolver = inflightResolvers.get(cacheKey);
                 if (resolver) {
                     resolver.resolve(fallback);
-                    inflightResolvers.delete(targetText);
+                    inflightResolvers.delete(cacheKey);
                 }
-                inflightRequests.delete(targetText);
+                inflightRequests.delete(cacheKey);
             }
         });
     }
     catch (error) {
         console.error("[WebPurifier] 필터 요청 실패(batch)", error);
-        texts.forEach((targetText) => {
-            inflightRequests.delete(targetText);
-            const resolver = inflightResolvers.get(targetText);
+        keys.forEach((cacheKey) => {
+            inflightRequests.delete(cacheKey);
+            const resolver = inflightResolvers.get(cacheKey);
             if (resolver) {
                 resolver.reject(error);
-                inflightResolvers.delete(targetText);
+                inflightResolvers.delete(cacheKey);
             }
         });
     }
@@ -231,19 +249,20 @@ async function flushBatchQueue() {
     }
 }
 async function getFilterResult(text, config) {
-    const cached = getCachedFilterResult(text);
+    const cacheKey = getFilterCacheKey(text, config);
+    const cached = getCachedFilterResult(cacheKey);
     if (cached) {
         return cached;
     }
-    const inflight = inflightRequests.get(text);
+    const inflight = inflightRequests.get(cacheKey);
     if (inflight) {
         return inflight;
     }
     const requestPromise = new Promise((resolve, reject) => {
-        inflightResolvers.set(text, { resolve, reject });
+        inflightResolvers.set(cacheKey, { resolve, reject });
     });
-    inflightRequests.set(text, requestPromise);
-    batchQueue.push({ text, config });
+    inflightRequests.set(cacheKey, requestPromise);
+    batchQueue.push({ text, key: cacheKey, config });
     scheduleBatchFlush();
     return requestPromise;
 }
@@ -447,8 +466,8 @@ function isNodeHighPriority(node) {
 }
 const feedbackContextMap = new WeakMap();
 const feedbackContextSet = new Set();
-const blurClickHandlerMap = new WeakMap();
 let feedbackListenersAttached = false;
+let blurClickDelegationAttached = false;
 let activeFeedbackContext = null;
 const requestIdleCallbackFn = typeof window !== "undefined" &&
     typeof window.requestIdleCallback ===
@@ -1522,7 +1541,6 @@ function attachFeedbackControls(element, text, categories) {
         feedbackContextSet.add(newContext);
         document.body.appendChild(overlay);
         ensureFeedbackListeners();
-        ensureBlurClickHandler(element);
         weakenBtn.addEventListener("click", (event) => {
             event.preventDefault();
             handleFeedbackSubmission(newContext, "weaken");
@@ -1623,38 +1641,48 @@ function showFeedbackOverlay(context) {
 function hideFeedbackOverlay(context) {
     context.overlay.style.display = "none";
 }
-function ensureBlurClickHandler(element) {
-    if (blurClickHandlerMap.has(element)) {
+function ensureBlurClickDelegation() {
+    if (blurClickDelegationAttached) {
         return;
     }
-    const handler = (event) => {
-        handleBlurredElementClick(element, event);
-    };
-    blurClickHandlerMap.set(element, handler);
-    element.addEventListener("click", handler, true);
+    document.addEventListener("click", handleDelegatedBlurClick, true);
+    blurClickDelegationAttached = true;
 }
-function removeBlurClickHandler(element) {
-    const handler = blurClickHandlerMap.get(element);
-    if (!handler) {
+function teardownBlurClickDelegation() {
+    if (!blurClickDelegationAttached) {
         return;
     }
-    element.removeEventListener("click", handler, true);
-    blurClickHandlerMap.delete(element);
+    document.removeEventListener("click", handleDelegatedBlurClick, true);
+    blurClickDelegationAttached = false;
 }
-function handleBlurredElementClick(element, event) {
-    if (event.button !== 0) {
+function handleDelegatedBlurClick(event) {
+    if (event.button !== 0 || !currentConfig?.token) {
         return;
     }
-    const context = feedbackContextMap.get(element);
-    if (!context || !currentConfig?.token) {
+    const targetElement = findBlurredElementFromEvent(event.target);
+    if (!targetElement) {
         return;
     }
-    if (element.getAttribute("data-webpurifier-revealed") === "true") {
+    if (targetElement.getAttribute("data-webpurifier-revealed") === "true") {
+        return;
+    }
+    const context = feedbackContextMap.get(targetElement);
+    if (!context) {
         return;
     }
     event.preventDefault();
     event.stopPropagation();
     activateWeakenFeedback(context);
+}
+function findBlurredElementFromEvent(target) {
+    let node = target instanceof Element ? target : null;
+    while (node) {
+        if (node.hasAttribute("data-webpurifier-blurred")) {
+            return node;
+        }
+        node = node.parentElement;
+    }
+    return null;
 }
 function activateWeakenFeedback(context) {
     if (activeFeedbackContext && activeFeedbackContext !== context) {
@@ -1731,6 +1759,7 @@ function ensureFeedbackListeners() {
     window.addEventListener("scroll", refreshFeedbackOverlayPositions, true);
     window.addEventListener("resize", refreshFeedbackOverlayPositions);
     document.addEventListener("mousedown", handleFeedbackOutsideClick, true);
+    ensureBlurClickDelegation();
     feedbackListenersAttached = true;
 }
 function teardownFeedbackListeners() {
@@ -1740,6 +1769,7 @@ function teardownFeedbackListeners() {
     window.removeEventListener("scroll", refreshFeedbackOverlayPositions, true);
     window.removeEventListener("resize", refreshFeedbackOverlayPositions);
     document.removeEventListener("mousedown", handleFeedbackOutsideClick, true);
+    teardownBlurClickDelegation();
     feedbackListenersAttached = false;
 }
 function detachFeedback(element) {
@@ -1761,7 +1791,6 @@ function detachFeedback(element) {
     feedbackContextMap.delete(element);
     feedbackContextSet.delete(context);
     context.overlay.remove();
-    removeBlurClickHandler(element);
     if (feedbackContextSet.size === 0) {
         teardownFeedbackListeners();
     }
@@ -1775,7 +1804,6 @@ function clearAllFeedback() {
         deactivateWeakenFeedback(context);
         context.overlay.remove();
         feedbackContextMap.delete(context.element);
-        removeBlurClickHandler(context.element);
     });
     feedbackContextSet.clear();
     teardownFeedbackListeners();

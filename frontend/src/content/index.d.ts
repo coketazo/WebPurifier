@@ -69,8 +69,13 @@ declare const inflightResolvers: Map<string, {
     resolve: (value: FilterResult) => void;
     reject: (reason?: unknown) => void;
 }>;
+declare const FNV_OFFSET_BASIS = 2166136261;
+declare const FNV_PRIME = 16777619;
+declare function hashTextContent(text: string): string;
+declare function getFilterCacheKey(text: string, config: StoredConfig): string;
 interface BatchItem {
     text: string;
+    key: string;
     config: StoredConfig;
 }
 declare const batchQueue: BatchItem[];
@@ -160,8 +165,8 @@ interface FeedbackContext {
 }
 declare const feedbackContextMap: WeakMap<Element, FeedbackContext>;
 declare const feedbackContextSet: Set<FeedbackContext>;
-declare const blurClickHandlerMap: WeakMap<Element, EventListener>;
 declare let feedbackListenersAttached: boolean;
+declare let blurClickDelegationAttached: boolean;
 declare let activeFeedbackContext: FeedbackContext | null;
 declare const requestIdleCallbackFn: (((callback: IdleRequestCallback, options?: IdleRequestOptions) => number) & ((callback: (deadline: IdleDeadlineLike) => void, options?: {
     timeout?: number;
@@ -235,9 +240,10 @@ declare function positionFeedbackOverlay(context: FeedbackContext): void;
 declare function refreshFeedbackOverlayPositions(): void;
 declare function showFeedbackOverlay(context: FeedbackContext): void;
 declare function hideFeedbackOverlay(context: FeedbackContext): void;
-declare function ensureBlurClickHandler(element: Element): void;
-declare function removeBlurClickHandler(element: Element): void;
-declare function handleBlurredElementClick(element: Element, event: MouseEvent): void;
+declare function ensureBlurClickDelegation(): void;
+declare function teardownBlurClickDelegation(): void;
+declare function handleDelegatedBlurClick(event: MouseEvent): void;
+declare function findBlurredElementFromEvent(target: EventTarget | null): Element | null;
 declare function activateWeakenFeedback(context: FeedbackContext): void;
 declare function deactivateWeakenFeedback(context?: FeedbackContext): void;
 declare function revealBlurredElement(element: Element | null): void;
